@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Beamer</string>
+    <string name="accessibility_service_label">Beamer Input Bridge</string>
+    <string name="accessibility_service_description">Allows Beamer to move the tablet pointer, perform gestures, and route hardware keyboard shortcuts when driven by a paired Mac, Windows PC, or Linux machine on your local network.</string>
+</resources>
+

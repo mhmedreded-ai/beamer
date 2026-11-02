@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <!-- Background rounded square from Beamer.svg -->
+    <path
+        android:fillColor="#161714"
+        android:pathData="M15,1 L49,1 A14,14 0 0,1 63,15 L63,49 A14,14 0 0,1 49,63 L15,63 A14,14 0 0,1 1,49 L1,15 A14,14 0 0,1 15,1 Z" />
+    <!-- Left screen -->
+    <path
+        android:fillColor="#3d3e37"
+        android:pathData="M10,13 L26,13 A2,2 0 0,1 28,15 L28,47 A2,2 0 0,1 26,49 L10,49 A2,2 0 0,1 8,47 L8,15 A2,2 0 0,1 10,13 Z" />
+    <!-- Right screen -->
+    <path
+        android:fillColor="#6e6f66"
+        android:pathData="M38,13 L54,13 A2,2 0 0,1 56,15 L56,47 A2,2 0 0,1 54,49 L38,49 A2,2 0 0,1 36,47 L36,15 A2,2 0 0,1 38,13 Z" />
+    <!-- Crossing Cyan Beam -->
+    <path
+        android:fillColor="#5fd4f4"
+        android:pathData="M30.7,9 L33.3,9 A1.2,1.2 0 0,1 34.5,10.2 L34.5,51.8 A1.2,1.2 0 0,1 33.3,53 L30.7,53 A1.2,1.2 0 0,1 29.5,51.8 L29.5,10.2 A1.2,1.2 0 0,1 30.7,9 Z" />
+    <!-- Cursor Arrow -->
+    <path
+        android:fillColor="#efeee6"
+        android:strokeColor="#0e0f0d"
+        android:strokeWidth="1.5"
+        android:strokeLineJoin="round"
+        android:pathData="M42,17 L42,40.8 L36.4,35.2 L32.2,45 L28.7,43.6 L32.9,33.8 L25.2,33.8 Z" />
+</vector>
+
