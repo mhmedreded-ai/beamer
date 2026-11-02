@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 1. Network & Discovery Permissions (TCP 24820 Link, UDP/TCP 24821 Pairing, Wake-on-LAN) -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -8,9 +9,9 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- 2. Persistent KVM Bridge Foreground Service, Battery Optimization Exemption & Notification -->
+    <!-- 2. Persistent KVM Bridge Foreground Service (Android 14 / 15 / 16 compatible), Battery & Notification -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -33,11 +34,13 @@
     <application
         android:name=".BeamerApplication"
         android:allowBackup="false"
+        android:extractNativeLibs="true"
         android:icon="@drawable/ic_beamer_logo"
         android:roundIcon="@drawable/ic_beamer_logo"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Beamer">
+        android:theme="@style/Theme.Beamer"
+        tools:targetApi="36">
 
         <property
             android:name="android.window.PROPERTY_COMPAT_ALLOW_MIN_ASPECT_RATIO_OVERRIDE"
@@ -46,7 +49,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|uiMode">
             <intent-filter>
@@ -55,13 +58,17 @@
             </intent-filter>
         </activity>
 
-        <!-- Persistent Foreground Service keeping TCP 24820 links & heartbeats alive -->
+        <!-- Persistent Foreground Service keeping TCP 24820 links & heartbeats alive on Android 14/15/16 -->
         <service
             android:name=".service.BeamerLinkService"
             android:enabled="true"
             android:exported="false"
             android:stopWithTask="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local network KVM keyboard and mouse bridge over TCP 24820" />
+        </service>
 
         <!-- Accessibility Service for Tablet Responder Mode (Pointer Gesture Injection & Key Capture) -->
         <service

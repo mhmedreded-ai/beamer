@@ -13,17 +13,24 @@ val resolvedVersionName = (project.findProperty("versionName") as String?) ?: re
 
 android {
     namespace = "uk.co.kalkman.beamer"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "uk.co.kalkman.beamer"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 10518
+        targetSdk = 36
+        versionCode = 10519
         versionName = resolvedVersionName
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // Required for Android 15 & Android 16 (16 KB page size support) with Chaquopy prebuilt .so libraries
+            useLegacyPackaging = true
         }
     }
 
@@ -82,9 +89,7 @@ chaquopy {
     }
     sourceSets {
         getByName("main") {
-            srcDirs("..", "src/main/python")
-            include("core/**/*.py", "nacl/**/*.py", "beamer_android_bridge.py")
-            exclude("core/tests/**")
+            srcDir("src/main/python")
         }
     }
 }

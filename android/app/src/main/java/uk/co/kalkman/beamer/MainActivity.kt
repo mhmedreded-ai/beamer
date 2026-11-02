@@ -168,7 +168,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         permissionManager = BeamerPermissionManager(this)
-        startBeamerForegroundService()
+        BeamerApplication.ensureBridgeReady(this)
 
         setContent {
             MaterialTheme(colorScheme = BeamerDarkPalette) {
@@ -210,12 +210,13 @@ class MainActivity : ComponentActivity() {
 
     private fun loadCoreState(): CoreUiState {
         return try {
+            BeamerApplication.ensureBridgeReady(this)
             val py = Python.getInstance()
             val bridge = py.getModule("beamer_android_bridge").callAttr("get_bridge")
             val json = bridge.callAttr("get_state_json").toString()
             parseCoreState(json)
-        } catch (e: Exception) {
-            CoreUiState(lastEvent = "Python core init: ${e.message}")
+        } catch (t: Throwable) {
+            CoreUiState(lastEvent = "Python core init: ${t.message}")
         }
     }
 

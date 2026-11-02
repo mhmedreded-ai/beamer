@@ -9,6 +9,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
@@ -22,14 +23,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import uk.co.kalkman.beamer.BeamerApplication
 import uk.co.kalkman.beamer.MainActivity
 import uk.co.kalkman.beamer.R
 
 /**
- * Persistent foreground service keeping Beamer's Wire v6 TCP 24820 links and 400ms idle heartbeats
- * active while preventing Android Doze or Wi-Fi power-save modes from dropping packets.
- * Also drains remote events from BeamerAndroidBridge and dispatches them to BeamerAccessibilityService
- * and Android's ClipboardManager.
+ * Persistent foreground service compatible with Android 14, 15, and Android 16 (API 36).
+ * Uses SPECIAL_USE foreground service type with full exception guarding so Android 16 never
+ * terminates the app process if background/notification restrictions are active.
  */
 class BeamerLinkService : Service() {
 
@@ -39,30 +40,51 @@ class BeamerLinkService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        promoteToForegroundSafely()
         acquirePowerAndWifiLocks()
         startRuntimeLoop()
     }
 
+    private fun promoteToForegroundSafely() {
+        try {
+            val notification = buildNotification()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (_: Throwable) {
+            // Guard against Android 14/15/16 ForegroundServiceStartNotAllowedException
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        promoteToForegroundSafely()
         if (intent?.action == ACTION_RETURN_HOME) {
             try {
+                BeamerApplication.ensureBridgeReady(applicationContext)
                 val py = Python.getInstance()
                 val bridge = py.getModule("beamer_android_bridge").callAttr("get_bridge")
                 bridge.callAttr("return_home")
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             }
         }
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Ensure service stays alive if the user swipes away the task in tablet multi-window
-        val restartIntent = Intent(applicationContext, BeamerLinkService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            applicationContext.startForegroundService(restartIntent)
-        } else {
-            applicationContext.startService(restartIntent)
+        try {
+            val restartIntent = Intent(applicationContext, BeamerLinkService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restartIntent)
+            } else {
+                applicationContext.startService(restartIntent)
+            }
+        } catch (_: Throwable) {
         }
         super.onTaskRemoved(rootIntent)
     }
@@ -79,7 +101,7 @@ class BeamerLinkService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
 
         try {
@@ -94,7 +116,7 @@ class BeamerLinkService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
@@ -102,14 +124,16 @@ class BeamerLinkService : Service() {
         serviceScope.launch {
             while (isActive) {
                 try {
-                    val py = Python.getInstance()
-                    val bridge = py.getModule("beamer_android_bridge").callAttr("get_bridge")
-                    bridge.callAttr("tick_runtime")
-                    val eventsJson = bridge.callAttr("drain_remote_events_json").toString()
-                    dispatchRemoteEvents(eventsJson)
-                } catch (_: Exception) {
+                    if (BeamerApplication.ensureBridgeReady(applicationContext)) {
+                        val py = Python.getInstance()
+                        val bridge = py.getModule("beamer_android_bridge").callAttr("get_bridge")
+                        bridge.callAttr("tick_runtime")
+                        val eventsJson = bridge.callAttr("drain_remote_events_json").toString()
+                        dispatchRemoteEvents(eventsJson)
+                    }
+                } catch (_: Throwable) {
                 }
-                delay(32L)
+                delay(40L)
             }
         }
     }
@@ -182,7 +206,7 @@ class BeamerLinkService : Service() {
 
         return Notification.Builder(this, channelId)
             .setContentTitle("Beamer KVM Active")
-            .setContentText("Wire v6 encrypted link ready on TCP 24820 (Low-Latency Wi-Fi Lock)")
+            .setContentText("Wire v6 encrypted link ready on TCP 24820")
             .setSmallIcon(R.drawable.ic_beamer_logo)
             .setContentIntent(openIntent)
             .addAction(actionReturnHome)
@@ -194,11 +218,11 @@ class BeamerLinkService : Service() {
         serviceScope.cancel()
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         try {
             if (wifiLock?.isHeld == true) wifiLock?.release()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         super.onDestroy()
     }
