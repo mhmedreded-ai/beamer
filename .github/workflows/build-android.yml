@@ -88,15 +88,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Accept Android SDK licenses and install SDK packages
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platform-tools" \
-                     "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
-                     "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platform-tools" \
+                        "platforms;android-${{ env.ANDROID_COMPILE_SDK }}" \
+                        "build-tools;${{ env.ANDROID_BUILD_TOOLS }}"
 
       - name: Set up Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v4
