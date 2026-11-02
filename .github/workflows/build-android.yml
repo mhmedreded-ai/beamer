@@ -36,18 +36,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate repository root
-        id: root
-        run: |
-          if [ -f "VERSION" ]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
-          elif [ -f "beamer-1.5.18/VERSION" ]; then
-            echo "dir=beamer-1.5.18" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Could not locate VERSION file"
-            exit 1
-          fi
-
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
@@ -59,16 +47,21 @@ jobs:
           pip install "PyNaCl>=1.6" "segno>=1.6"
 
       - name: Run shared core & Android bridge unit tests
-        working-directory: ${{ steps.root.outputs.dir }}
         run: |
-          python -m unittest core.tests.test_android_bridge -v
-          python -m unittest discover -s core/tests -t . -v
+          python -m unittest \
+            core.tests.test_android_bridge \
+            core.tests.test_phone_contract \
+            core.tests.test_phone_targets \
+            core.tests.test_owner \
+            core.tests.test_v6_vectors \
+            core.tests.test_keytable \
+            core.tests.test_settings_sync \
+            core.tests.test_input_scale \
+            -v
 
       - name: Verify golden Wire v6 phone/tablet test vectors
-        working-directory: ${{ steps.root.outputs.dir }}
         run: |
           python tools/phone_vectors.py
-          git diff --exit-code tools/phone_vectors.json || true
 
   build-android-apk:
     name: Build Android & Tablet APK
@@ -78,20 +71,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate repository & Android project root
+      - name: Read Beamer VERSION
         id: paths
         run: |
-          if [ -f "VERSION" ]; then
-            REPO_DIR="."
-          elif [ -f "beamer-1.5.18/VERSION" ]; then
-            REPO_DIR="beamer-1.5.18"
-          else
-            echo "::error::Could not locate VERSION file"
-            exit 1
-          fi
-          VERSION=$(tr -d '[:space:]' < "$REPO_DIR/VERSION")
-          echo "repo_dir=$REPO_DIR" >> "$GITHUB_OUTPUT"
-          echo "android_dir=$REPO_DIR/android" >> "$GITHUB_OUTPUT"
+          VERSION=$(tr -d '[:space:]' < VERSION)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
@@ -121,21 +104,22 @@ jobs:
           gradle-version: ${{ env.GRADLE_VERSION }}
 
       - name: Decode Release Keystore (if configured in repository secrets)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          echo "$KEYSTORE_B64" | base64 --decode > "${{ steps.paths.outputs.android_dir }}/app/release-keystore.jks"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 --decode > "android/app/release-keystore.jks"
+          fi
 
       - name: Build Debug APK
         if: ${{ github.event.inputs.build_type != 'release' }}
-        working-directory: ${{ steps.paths.outputs.android_dir }}
+        working-directory: android
         run: |
           gradle assembleDebug --stacktrace -PversionName="${{ steps.paths.outputs.version }}"
 
       - name: Build Release APK
         if: ${{ github.event.inputs.build_type != 'debug' }}
-        working-directory: ${{ steps.paths.outputs.android_dir }}
+        working-directory: android
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -147,12 +131,11 @@ jobs:
         run: |
           mkdir -p dist-apk
           VERSION="${{ steps.paths.outputs.version }}"
-          ANDROID_DIR="${{ steps.paths.outputs.android_dir }}"
-          if [ -f "${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk" ]; then
-            cp "${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk" \
+          if [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
+            cp "android/app/build/outputs/apk/debug/app-debug.apk" \
                "dist-apk/Beamer-${VERSION}-android-debug.apk"
           fi
-          for apk in "${ANDROID_DIR}"/app/build/outputs/apk/release/*.apk; do
+          for apk in android/app/build/outputs/apk/release/*.apk; do
             if [ -f "$apk" ]; then
               cp "$apk" "dist-apk/Beamer-${VERSION}-android-release.apk"
             fi
@@ -166,4 +149,3 @@ jobs:
           path: dist-apk/*.apk
           if-no-files-found: error
           retention-days: 30
-
