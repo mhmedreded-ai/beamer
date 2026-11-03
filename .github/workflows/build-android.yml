@@ -142,10 +142,113 @@ jobs:
           done
           ls -lh dist-apk/
 
-      - name: Upload Debug & Release APK Artifacts
+      - name: Live Test APK on Honor MagicPad 2 (3000x1920 @ 290dpi) Emulator
+        run: |
+          sudo chmod 666 /dev/kvm || true
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          AVDMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager"
+          yes | "$SDKMANAGER" "emulator" "system-images;android-34;default;x86_64" > /dev/null
+          echo "no" | "$AVDMANAGER" create avd -n magicpad2 -k "system-images;android-34;default;x86_64" --force
+          cat >> ~/.android/avd/magicpad2.avd/config.ini << 'EOF'
+          hw.lcd.width=3000
+          hw.lcd.height=1920
+          hw.lcd.density=290
+          hw.keyboard=yes
+          hw.ramSize=4096
+          EOF
+
+          "${ANDROID_HOME}/emulator/emulator" -avd magicpad2 -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim &
+          EMULATOR_PID=$!
+
+          "${ANDROID_HOME}/platform-tools/adb" wait-for-device
+          for i in $(seq 1 90); do
+            BOOT=$("${ANDROID_HOME}/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$BOOT" = "1" ]; then
+              echo "Honor MagicPad 2 emulator booted successfully."
+              break
+            fi
+            sleep 2
+          done
+
+          ADB="${ANDROID_HOME}/platform-tools/adb"
+          $ADB shell wm size 3000x1920
+          $ADB shell wm density 290
+          $ADB shell settings put global window_animation_scale 0
+          $ADB shell settings put global transition_animation_scale 0
+          $ADB shell settings put global animator_duration_scale 0
+
+          VERSION="${{ steps.paths.outputs.version }}"
+          $ADB install -r "dist-apk/Beamer-${VERSION}-android-release.apk"
+          $ADB logcat -c
+
+          echo "Launching uk.co.kalkman.beamer/.MainActivity on Honor MagicPad 2 (3000x1920)..."
+          $ADB shell am start -W -n uk.co.kalkman.beamer/.MainActivity
+          sleep 6
+
+          APP_PID=$($ADB shell pidof uk.co.kalkman.beamer | tr -d '\r')
+          echo "Running Process PID: $APP_PID"
+          if [ -z "$APP_PID" ]; then
+            echo "ERROR: App process died after launch!"
+            $ADB logcat -d *:E
+            exit 1
+          fi
+
+          $ADB exec-out screencap -p > "dist-apk/Honor-MagicPad-2-Permissions-Screen.png"
+          $ADB shell uiautomator dump /sdcard/window_dump.xml
+          $ADB pull /sdcard/window_dump.xml "dist-apk/magicpad2-ui-dump.xml"
+
+          # Verify Python core bridge initialized cleanly ("Wire v6") and no startup errors occurred
+          grep -q "Wire v6" "dist-apk/magicpad2-ui-dump.xml"
+          grep -q "BEAMER" "dist-apk/magicpad2-ui-dump.xml"
+          if grep -q "Python core init:" "dist-apk/magicpad2-ui-dump.xml"; then
+            echo "ERROR: Python core init error found on screen!"
+            cat "dist-apk/magicpad2-ui-dump.xml"
+            exit 1
+          fi
+
+          # Tap Overview tab in NavigationRail & simulate trackpad drag on the right pane
+          $ADB shell input tap 55 155
+          sleep 2
+          $ADB shell input swipe 2100 700 2550 920 250
+          sleep 2
+          $ADB exec-out screencap -p > "dist-apk/Honor-MagicPad-2-Overview-Screen.png"
+
+          # Verify app is still alive after interactions and zero FATAL EXCEPTION occurred
+          APP_PID_AFTER=$($ADB shell pidof uk.co.kalkman.beamer | tr -d '\r')
+          if [ -z "$APP_PID_AFTER" ]; then
+            echo "ERROR: App crashed during UI interaction!"
+            $ADB logcat -d *:E
+            exit 1
+          fi
+          if $ADB logcat -d | grep -q "FATAL EXCEPTION"; then
+            echo "ERROR: FATAL EXCEPTION detected in logcat!"
+            $ADB logcat -d *:E
+            exit 1
+          fi
+
+          {
+            echo "Honor MagicPad 2 (3000x1920 @ 290dpi) Live Verification Report"
+            echo "=============================================================="
+            echo "APK Tested: Beamer-${VERSION}-android-release.apk"
+            echo "Display Size: $($ADB shell wm size | tr -d '\r')"
+            echo "Display Density: $($ADB shell wm density | tr -d '\r')"
+            echo "Process PID Before Interaction: $APP_PID"
+            echo "Process PID After Interaction:  $APP_PID_AFTER"
+            echo "UI Verification: BEAMER dual-pane + Wire v6 Python Core Bridge active"
+            echo "Fatal Exceptions: 0"
+          } > "dist-apk/magicpad2-test-report.txt"
+          cat "dist-apk/magicpad2-test-report.txt"
+
+          kill $EMULATOR_PID || true
+
+      - name: Upload Debug & Release APK Artifacts + Honor MagicPad 2 Test Proof
         uses: actions/upload-artifact@v4
         with:
           name: Beamer-${{ steps.paths.outputs.version }}-Android-APKs
-          path: dist-apk/*.apk
+          path: |
+            dist-apk/*.apk
+            dist-apk/*.png
+            dist-apk/*.txt
+            dist-apk/*.xml
           if-no-files-found: error
           retention-days: 30

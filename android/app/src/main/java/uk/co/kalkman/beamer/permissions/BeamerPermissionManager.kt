@@ -123,8 +123,15 @@ class BeamerPermissionManager(private val activity: ComponentActivity) {
             return
         }
         val pkgUri = Uri.parse("package:${activity.packageName}")
+        val honorStartupIntent = Intent().apply {
+            setClassName(
+                "com.hihonor.systemmanager",
+                "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"
+            )
+        }
         val candidates = listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkgUri),
+            honorStartupIntent,
             Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri),
         )
@@ -134,14 +141,25 @@ class BeamerPermissionManager(private val activity: ComponentActivity) {
         )
     }
 
+    fun openAppDetailsSettings() {
+        val pkgUri = Uri.parse("package:${activity.packageName}")
+        val candidates = listOf(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkgUri),
+            Intent(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS),
+        )
+        launchFirstAvailableIntent(
+            candidates,
+            fallbackNotice = "Please open System Settings -> Apps -> Beamer -> (⋮) -> Allow restricted settings."
+        )
+    }
+
     private fun launchFirstAvailableIntent(candidates: List<Intent>, fallbackNotice: String) {
         for (intent in candidates) {
             try {
                 settingsLauncher.launch(intent)
                 return
-            } catch (_: ActivityNotFoundException) {
-                // Try next fallback intent
-            } catch (_: SecurityException) {
+            } catch (_: Throwable) {
                 // Try next fallback intent
             }
         }

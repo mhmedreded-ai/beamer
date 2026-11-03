@@ -81,8 +81,10 @@ class BeamerAccessibilityService : AccessibilityService() {
     }
 
     fun injectWheel(dx: Float, dy: Float) {
-        val endX = (cursorX + dx * 6f).coerceIn(10f, resources.displayMetrics.widthPixels - 10f)
-        val endY = (cursorY + dy * 6f).coerceIn(10f, resources.displayMetrics.heightPixels - 10f)
+        val maxX = (resources.displayMetrics.widthPixels - 10f).coerceAtLeast(10f)
+        val maxY = (resources.displayMetrics.heightPixels - 10f).coerceAtLeast(10f)
+        val endX = (cursorX + dx * 6f).coerceIn(10f, maxX)
+        val endY = (cursorY + dy * 6f).coerceIn(10f, maxY)
         if (kotlin.math.abs(endX - cursorX) > 2f || kotlin.math.abs(endY - cursorY) > 2f) {
             injectSwipe(cursorX, cursorY, endX, endY, durationMs = 90L)
         }

@@ -296,9 +296,9 @@ fun BeamerAdaptiveShell(
     onStartLinkService: () -> Unit,
 ) {
     val config = LocalConfiguration.current
-    // Three-tier responsive breakpoints for Tablet Fullscreen (>= 840dp), Tablet Split-Screen (>= 600dp), and Compact (< 600dp)
-    val isExpandedTablet = config.screenWidthDp >= 840
-    val isMediumSplitTablet = config.screenWidthDp in 600..839
+    // Three-tier responsive breakpoints optimized for Honor MagicPad 2 (3000x1920, 290dpi), Tablet Split-Screen, and Compact
+    val isExpandedTablet = config.screenWidthDp >= 800
+    val isMediumSplitTablet = config.screenWidthDp in 580..799
     val useTwoPane = isExpandedTablet || (isMediumSplitTablet && config.screenWidthDp > config.screenHeightDp)
 
     var currentPage by remember {
@@ -1080,28 +1080,32 @@ fun TabletTrackpadAndModifierSurface(
                     }
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    drawCircle(
-                        color = Color(0xFF5FD4F4),
-                        radius = 9.dp.toPx(),
-                        center = Offset(
-                            pointerPos.x.coerceIn(12f, size.width - 12f),
-                            pointerPos.y.coerceIn(12f, size.height - 12f)
+                    if (size.width > 1f && size.height > 1f) {
+                        val maxX = (size.width - 12f).coerceAtLeast(12f)
+                        val maxY = (size.height - 12f).coerceAtLeast(12f)
+                        drawCircle(
+                            color = Color(0xFF5FD4F4),
+                            radius = 9.dp.toPx(),
+                            center = Offset(
+                                pointerPos.x.coerceIn(12f, maxX),
+                                pointerPos.y.coerceIn(12f, maxY)
+                            )
                         )
-                    )
-                    if (edgePressure > 0.01f) {
-                        val glowWidth = (38.dp.toPx() * (0.4f + edgePressure))
-                        drawRect(
-                            brush = Brush.horizontalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    Color(0xFF5FD4F4).copy(alpha = 0.78f * edgePressure)
+                        if (edgePressure > 0.01f) {
+                            val glowWidth = (38.dp.toPx() * (0.4f + edgePressure)).coerceAtMost(size.width)
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color(0xFF5FD4F4).copy(alpha = 0.78f * edgePressure)
+                                    ),
+                                    startX = (size.width - glowWidth).coerceAtLeast(0f),
+                                    endX = size.width
                                 ),
-                                startX = size.width - glowWidth,
-                                endX = size.width
-                            ),
-                            topLeft = Offset(size.width - glowWidth, 0f),
-                            size = androidx.compose.ui.geometry.Size(glowWidth, size.height)
-                        )
+                                topLeft = Offset((size.width - glowWidth).coerceAtLeast(0f), 0f),
+                                size = androidx.compose.ui.geometry.Size(glowWidth, size.height)
+                            )
+                        }
                     }
                 }
             }
