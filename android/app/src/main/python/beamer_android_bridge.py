@@ -32,6 +32,7 @@ from core import protocol
 from core import receiver
 from core import return_edge as crossing
 from core import settings_sync
+from core import token_manager
 from core import wol
 
 VALID_BUTTONS = frozenset({"left", "right", "middle", "back", "forward"})
@@ -46,13 +47,39 @@ class _AndroidInjectorAdapter:
         self._bridge = bridge
 
     def inject_mouse_move(self, dx: int, dy: int) -> None:
-        self._bridge._enqueue_remote({"kind": "move", "dx": int(dx), "dy": int(dy)})
+        cur_x, cur_y, hit_edge, hit_offset = self._bridge._desktop_adapter.move_by(int(dx), int(dy))
+        self._bridge._enqueue_remote({
+            "kind": "move",
+            "dx": int(dx),
+            "dy": int(dy),
+            "x": int(cur_x),
+            "y": int(cur_y),
+        })
+        if hit_edge is not None:
+            self._bridge._on_remote_boundary_push(int(dx), int(dy), hit_edge, hit_offset)
+        else:
+            self._bridge._return_edge_push = max(0.0, self._bridge._return_edge_push * 0.5)
 
     def inject_mouse_button(self, button: str, down: bool = True) -> None:
-        self._bridge._enqueue_remote({"kind": "button", "button": str(button), "down": bool(down)})
+        cur_x, cur_y = self._bridge._desktop_adapter.cursor_position()
+        self._bridge._enqueue_remote({
+            "kind": "button",
+            "button": str(button),
+            "down": bool(down),
+            "x": int(cur_x),
+            "y": int(cur_y),
+        })
 
     def inject_scroll(self, dy: float, dx: float, mode: str = "pixel") -> None:
-        self._bridge._enqueue_remote({"kind": "wheel", "dx": float(dx), "dy": float(dy), "mode": str(mode)})
+        cur_x, cur_y = self._bridge._desktop_adapter.cursor_position()
+        self._bridge._enqueue_remote({
+            "kind": "wheel",
+            "dx": float(dx),
+            "dy": float(dy),
+            "mode": str(mode),
+            "x": int(cur_x),
+            "y": int(cur_y),
+        })
 
     def inject_key(self, key: str, down: bool = True, us: str | None = None) -> None:
         self._bridge._enqueue_remote({"kind": "key", "key": str(key), "down": bool(down), "us": us or ""})
@@ -72,23 +99,71 @@ class _AndroidInjectorAdapter:
             self._bridge._enqueue_remote({"kind": "text", "text": str(chars)})
 
     def release_all(self) -> None:
-        pass
+        self._bridge._enqueue_remote({"kind": "release_all"})
 
 
 class _AndroidDesktopAdapter:
-    """Virtual monitor geometry adapter for Honor MagicPad 2 (3000x1920) & Android Tablets."""
+    """Virtual monitor geometry adapter for Honor MagicPad 2 (3000x1920 @ 290 DPI) & Android Tablets."""
 
-    def __init__(self) -> None:
-        self._cursor = [1500, 960]
+    def __init__(self, bridge: BeamerAndroidBridge | None = None) -> None:
+        self._bridge = bridge
+        self.width: int = 3000
+        self.height: int = 1920
+        self.density: float = 290.0 / 160.0
+        self._cursor: list[int] = [1500, 960]
+
+    def set_geometry(self, width: int, height: int, density: float = 1.8125) -> None:
+        w = max(320, int(width))
+        h = max(320, int(height))
+        self.width = w
+        self.height = h
+        self.density = max(0.5, float(density))
+        self._cursor[0] = max(0, min(w - 1, self._cursor[0]))
+        self._cursor[1] = max(0, min(h - 1, self._cursor[1]))
 
     def monitors(self) -> list[Any]:
-        return [crossing.Rect(0, 0, 3000, 1920)]
+        return [crossing.Rect(0, 0, self.width, self.height)]
+
+    def display_map(self) -> dict[str, Any]:
+        return {"0": crossing.Rect(0, 0, self.width, self.height)}
 
     def cursor_position(self) -> tuple[int, int]:
         return (self._cursor[0], self._cursor[1])
 
     def set_cursor_position(self, x: int, y: int) -> None:
-        self._cursor = [max(0, min(3000, int(x))), max(0, min(1920, int(y)))]
+        clamped_x = max(0, min(self.width - 1, int(x)))
+        clamped_y = max(0, min(self.height - 1, int(y)))
+        self._cursor = [clamped_x, clamped_y]
+        if self._bridge is not None:
+            self._bridge._enqueue_remote({
+                "kind": "cursor_pos",
+                "x": clamped_x,
+                "y": clamped_y,
+            })
+
+    def move_by(self, dx: int, dy: int) -> tuple[int, int, str | None, float]:
+        raw_x = self._cursor[0] + int(dx)
+        raw_y = self._cursor[1] + int(dy)
+        clamped_x = max(0, min(self.width - 1, raw_x))
+        clamped_y = max(0, min(self.height - 1, raw_y))
+        self._cursor = [clamped_x, clamped_y]
+
+        hit_edge: str | None = None
+        hit_offset: float = 0.5
+        if raw_x <= 0 and dx < 0:
+            hit_edge = "left"
+            hit_offset = clamped_y / max(1, self.height - 1)
+        elif raw_x >= self.width - 1 and dx > 0:
+            hit_edge = "right"
+            hit_offset = clamped_y / max(1, self.height - 1)
+        elif raw_y <= 0 and dy < 0:
+            hit_edge = "top"
+            hit_offset = clamped_x / max(1, self.width - 1)
+        elif raw_y >= self.height - 1 and dy > 0:
+            hit_edge = "bottom"
+            hit_offset = clamped_x / max(1, self.width - 1)
+
+        return (clamped_x, clamped_y, hit_edge, max(0.0, min(1.0, float(hit_offset))))
 
 
 class _AndroidClipboardAdapter:
@@ -146,11 +221,21 @@ class BeamerAndroidBridge:
         self._local_clipboard_text: str = ""
         self._edge_pressure: float = 0.0
         self._active_edge: str = "right"
+        self._responder_owner_id: str = ""
+        self._entry_edge: str = "left"
+        self._arrival_at: float = 0.0
+        self._return_edge_push: float = 0.0
         self._remote_event_queue: deque[dict[str, Any]] = deque(maxlen=512)
         self._outbound_wire_log: deque[dict[str, Any]] = deque(maxlen=512)
 
+        self._token_manager = token_manager.TokenManager(
+            cache_path=self._files_dir / "token_cache.json"
+        )
+        if self._token_manager.can_refresh():
+            self._token_manager.start_background_refresh()
+
         self._injector_adapter = _AndroidInjectorAdapter(self)
-        self._desktop_adapter = _AndroidDesktopAdapter()
+        self._desktop_adapter = _AndroidDesktopAdapter(self)
         self._clipboard_adapter = _AndroidClipboardAdapter(self)
         self._peer_book = receiver.PeerBook(
             load=lambda: self._settings,
@@ -173,6 +258,137 @@ class BeamerAndroidBridge:
 
     def _enqueue_remote(self, item: dict[str, Any]) -> None:
         self._remote_event_queue.append(item)
+
+    def _zones_for_responder(self) -> list[dict[str, Any]]:
+        """Builds active return-edge zones for LinkResponder so that pushing against the shared edge
+        (or any boundary edge when driven by a desktop host) returns the cursor to the host."""
+        with self._lock:
+            zones: list[dict[str, Any]] = []
+            peers = list(self._settings.get("peers", []))
+            owner_id = self._responder_owner_id
+            used_edges: set[str] = set()
+            for peer in peers:
+                pid = peer.get("id")
+                side = peer.get("side")
+                if pid and side in ("left", "right", "top", "bottom"):
+                    zones.append({"peer": pid, "kind": "edge", "edge": side})
+                    used_edges.add(side)
+            # If a desktop host is actively driving this tablet, ensure the entry edge and any
+            # unassigned screen edges also return home to the driving host so the cursor is never trapped!
+            fallback_peer = owner_id or (peers[0].get("id", "") if peers else "")
+            if fallback_peer:
+                for edge in ("left", "right", "top", "bottom"):
+                    if edge not in used_edges:
+                        zones.append({"peer": fallback_peer, "kind": "edge", "edge": edge})
+            return zones
+
+    def _on_responder_owner(self, peer_id: str) -> None:
+        with self._lock:
+            self._responder_owner_id = str(peer_id or "")
+            self._return_edge_push = 0.0
+            if self._responder_owner_id:
+                self._arrival_at = time.monotonic()
+                cur_x, cur_y = self._desktop_adapter.cursor_position()
+                self._enqueue_remote({
+                    "kind": "arrival",
+                    "x": cur_x,
+                    "y": cur_y,
+                    "edge": self._entry_edge or "left",
+                })
+                self._last_event_summary = "Remote PC cursor active on tablet"
+            else:
+                self._enqueue_remote({"kind": "cursor_hide"})
+                self._last_event_summary = "Cursor returned to PC"
+
+    def _on_responder_arrival(self, edge: str | None, x: int, y: int) -> None:
+        with self._lock:
+            self._arrival_at = time.monotonic()
+            self._return_edge_push = 0.0
+            if edge in ("left", "right", "top", "bottom"):
+                self._entry_edge = edge
+            self._enqueue_remote({
+                "kind": "arrival",
+                "x": int(x),
+                "y": int(y),
+                "edge": edge or self._entry_edge or "left",
+            })
+
+    def _on_remote_boundary_push(self, dx: int, dy: int, hit_edge: str, hit_offset: float) -> None:
+        """Guarantees that pushing the cursor against the tablet screen boundary returns control
+        (`SWITCH_HOST` / `switch_v6`) to the Windows host without getting trapped."""
+        with self._lock:
+            now = time.monotonic()
+            # 0.30s grace period right after arrival so entry velocity doesn't immediately bounce back
+            if (now - self._arrival_at) < 0.30:
+                return
+            push_delta = abs(dx) if hit_edge in ("left", "right") else abs(dy)
+            self._return_edge_push += max(1.0, float(push_delta))
+            # Lower threshold on the entry edge (20px) and standard threshold on any boundary edge (48px)
+            threshold = 20.0 if hit_edge == self._entry_edge else min(64.0, max(24.0, float(self._settings.get("resistance_px", 120)) * 0.45))
+            if self._return_edge_push >= threshold:
+                self._return_edge_push = 0.0
+                self._trigger_switch_host_back(hit_edge, hit_offset)
+
+    def _trigger_switch_host_back(self, edge: str = "left", offset: float = 0.5) -> bool:
+        """Immediately sends `switch_v6` (`SWITCH_HOST`) back to the driving Windows host."""
+        sent = False
+        if self._responder is not None:
+            try:
+                if self._responder.owner is not None:
+                    sent = bool(self._responder.send_home())
+            except Exception:
+                sent = False
+        with self._lock:
+            self._responder_owner_id = ""
+            self._edge_pressure = 0.0
+            self._enqueue_remote({
+                "kind": "switch_host",
+                "edge": edge,
+                "offset": float(offset),
+            })
+            self._enqueue_remote({"kind": "cursor_hide"})
+            self._last_event_summary = f"SWITCH_HOST ({edge}) -> Returned cursor to PC"
+        return sent
+
+    def set_screen_geometry(self, width: int, height: int, density: float = 1.8125) -> str:
+        """Updates the Honor MagicPad 2 / Android display resolution and DPI scaling dynamically."""
+        with self._lock:
+            self._desktop_adapter.set_geometry(int(width), int(height), float(density))
+            return self.get_state_json()
+
+    def on_cursor_edge_hit(self, edge: str, offset: float = 0.5) -> str:
+        """Called by BeamerAccessibilityService when the floating cursor hits a physical screen boundary."""
+        with self._lock:
+            now = time.monotonic()
+            if (now - self._arrival_at) >= 0.30:
+                self._trigger_switch_host_back(edge, float(offset))
+            return self.get_state_json()
+
+    def configure_token_manager(
+        self,
+        access_token: str = "",
+        refresh_token: str = "",
+        expires_in: float = 3600.0,
+        client_id: str = "",
+        client_secret: str = "",
+        token_uri: str = token_manager.DEFAULT_GOOGLE_TOKEN_URI,
+    ) -> str:
+        with self._lock:
+            self._token_manager.set_credentials(
+                access_token=access_token or None,
+                refresh_token=refresh_token or None,
+                expires_in=float(expires_in),
+                client_id=client_id or None,
+                client_secret=client_secret or None,
+                token_uri=token_uri or None,
+            )
+            if self._token_manager.can_refresh():
+                self._token_manager.start_background_refresh()
+            return json.dumps(self._token_manager.status())
+
+    def get_token_status_json(self) -> str:
+        with self._lock:
+            return json.dumps(self._token_manager.status())
 
     def _identity_Bytes(self) -> bytes:
         raw = protocol.read_id(self._settings.get("machine_id", ""))
@@ -257,7 +473,10 @@ class BeamerAndroidBridge:
                 self._responder = receiver.LinkResponder(
                     self._peer_book,
                     self._identity_dict,
+                    zones=self._zones_for_responder,
                     status_callback=self._on_responder_status,
+                    owner_callback=self._on_responder_owner,
+                    arrival_callback=self._on_responder_arrival,
                     injector=self._injector_adapter,
                     desktop=self._desktop_adapter,
                     clipboard=self._clipboard_adapter,
@@ -579,6 +798,11 @@ class BeamerAndroidBridge:
                     "candidates": [],
                 }
 
+            cur_x, cur_y = self._desktop_adapter.cursor_position()
+            responder_driven = bool(
+                self._responder_owner_id
+                or (self._responder is not None and self._responder.owner is not None)
+            )
             state = {
                 "wire_version": protocol.LINK_VERSION,
                 "default_port": protocol.DEFAULT_PORT,
@@ -601,6 +825,12 @@ class BeamerAndroidBridge:
                 "responder_enabled": self._settings.get("responder_enabled", True),
                 "owner_on": self._owner.on,
                 "owner_away": bool(self._owner.away),
+                "responder_driven": responder_driven,
+                "responder_owner": self._responder_owner_id,
+                "screen_width": self._desktop_adapter.width,
+                "screen_height": self._desktop_adapter.height,
+                "cursor_x": cur_x,
+                "cursor_y": cur_y,
                 "edge_pressure": round(self._edge_pressure, 3),
                 "active_edge": self._active_edge,
                 "pairing_code": self._active_pairing_code,
@@ -612,6 +842,7 @@ class BeamerAndroidBridge:
                 "available_styles": style_list,
                 "pending_remote_events": len(self._remote_event_queue),
                 "outbound_frames_sent": len(self._outbound_wire_log),
+                "token_status": self._token_manager.status(),
             }
             return json.dumps(state)
 
@@ -800,8 +1031,10 @@ class BeamerAndroidBridge:
                     self._responder.send_home()
                 except Exception:
                     pass
+            self._responder_owner_id = ""
             self._edge_pressure = 0.0
-            self._last_event_summary = "Returned input home to tablet"
+            self._enqueue_remote({"kind": "cursor_hide"})
+            self._last_event_summary = "Returned input home / Released PC cursor"
             return self.get_state_json()
 
     def record_mousemove(
@@ -977,32 +1210,23 @@ class BeamerAndroidBridge:
             data = msg.get("data") or {}
             if msg_type == "mousemove":
                 dx, dy = self._input_scale.move(int(data.get("dx", 0)), int(data.get("dy", 0)))
-                self._remote_event_queue.append({"kind": "move", "dx": dx, "dy": dy})
+                self._injector_adapter.inject_mouse_move(dx, dy)
             elif msg_type in ("mousedown", "mouseup"):
-                self._remote_event_queue.append({
-                    "kind": "button",
-                    "button": data.get("button", "left"),
-                    "down": msg_type == "mousedown",
-                })
+                self._injector_adapter.inject_mouse_button(
+                    str(data.get("button", "left")),
+                    msg_type == "mousedown",
+                )
             elif msg_type == "wheel":
                 dy, dx = self._input_scale.wheel(float(data.get("dy", 0.0)), float(data.get("dx", 0.0)))
-                self._remote_event_queue.append({
-                    "kind": "wheel",
-                    "dx": dx,
-                    "dy": dy,
-                    "mode": data.get("mode", "pixel"),
-                })
+                self._injector_adapter.inject_scroll(dy, dx, str(data.get("mode", "pixel")))
             elif msg_type in ("keydown", "keyup"):
-                self._remote_event_queue.append({
-                    "kind": "key",
-                    "key": data.get("key", ""),
-                    "down": msg_type == "keydown",
-                })
+                self._injector_adapter.inject_key(
+                    str(data.get("key", "")),
+                    msg_type == "keydown",
+                    data.get("us"),
+                )
             elif msg_type == "text":
-                self._remote_event_queue.append({
-                    "kind": "text",
-                    "text": data.get("text", ""),
-                })
+                self._injector_adapter.inject_text(str(data.get("text", "")))
             elif msg_type == "gesture":
                 self._remote_event_queue.append({
                     "kind": "gesture",
@@ -1100,6 +1324,10 @@ class BeamerAndroidBridge:
             responder_svc, self._responder = self._responder, None
             links = list(self._outbound_links.values())
             self._outbound_links.clear()
+        try:
+            self._token_manager.stop_background_refresh()
+        except Exception:
+            pass
         for ob in links:
             try:
                 ob.stop(wait=False)

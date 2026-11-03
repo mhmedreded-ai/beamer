@@ -145,6 +145,85 @@ class AndroidBridgeIntegrationTests(unittest.TestCase):
         ar_state = json.loads(self.bridge.toggle_language())
         self.assertEqual(ar_state["ui_lang"], "ar")
 
+    def test_honor_magicpad2_cursor_coordinates_and_boundary_return_host(self) -> None:
+        # Configure Honor MagicPad 2 display geometry (3000x1920 @ 290 DPI)
+        self.bridge.set_screen_geometry(3000, 1920, 290.0 / 160.0)
+        self.bridge._desktop_adapter.set_cursor_position(40, 960)
+        self.bridge.drain_remote_events_json()
+
+        # Simulate remote PC taking ownership on left edge (arrival_at in the past past 0.30s grace)
+        self.bridge._on_responder_owner("win-desktop-peer")
+        self.bridge._on_responder_arrival("left", 40, 960)
+        self.bridge._arrival_at -= 1.0
+        self.bridge.drain_remote_events_json()
+
+        # Move left toward x=0 and push past boundary to trigger SWITCH_HOST back to Windows
+        self.bridge.inject_incoming_remote_event(json.dumps({"type": "mousemove", "data": {"dx": -25, "dy": 0}}))
+        self.bridge.inject_incoming_remote_event(json.dumps({"type": "mousemove", "data": {"dx": -30, "dy": 0}}))
+
+        events = json.loads(self.bridge.drain_remote_events_json())
+        kinds = [e["kind"] for e in events]
+        self.assertIn("move", kinds)
+        self.assertIn("switch_host", kinds)
+        self.assertIn("cursor_hide", kinds)
+        switch_ev = next(e for e in events if e["kind"] == "switch_host")
+        self.assertEqual(switch_ev["edge"], "left")
+
+    def test_token_manager_proactive_refresh_and_http_401_retry(self) -> None:
+        from core import token_manager
+        import email.message
+        import urllib.error
+
+        now_Box = [1000.0]
+        refresh_calls = [0]
+
+        def fake_refresh(state: dict) -> dict:
+            refresh_calls[0] += 1
+            return {
+                "access_token": f"fresh_token_{refresh_calls[0]}",
+                "refresh_token": state.get("refresh_token", "rt_1"),
+                "expires_in": 3600,
+            }
+
+        cache_file = Path(self.temp_dir.name) / "oauth_cache.json"
+        mgr = token_manager.TokenManager(
+            cache_path=cache_file,
+            access_token="stale_token",
+            refresh_token="rt_valid",
+            expires_at=1050.0,  # Within 120s refresh margin -> proactive refresh!
+            refresh_margin_seconds=120.0,
+            refresh_callback=fake_refresh,
+            clock=lambda: now_Box[0],
+        )
+
+        # 1. Proactive refresh before expiration
+        tok1 = mgr.get_valid_token()
+        self.assertEqual(tok1, "fresh_token_1")
+        self.assertEqual(refresh_calls[0], 1)
+        self.assertTrue(cache_file.exists())
+
+        # 2. Automatic retry on HTTP 401 Www-Authenticate: Bearer error="invalid_token"
+        attempts = [0]
+
+        def flaky_api_call(access_token: str = "") -> str:
+            attempts[0] += 1
+            if attempts[0] == 1:
+                hdrs = email.message.Message()
+                hdrs["Www-Authenticate"] = 'Bearer realm="https://accounts.google.com/", error="invalid_token"'
+                raise urllib.error.HTTPError(
+                    url="https://api.example.com/v1/resource",
+                    code=401,
+                    msg="Unauthorized",
+                    hdrs=hdrs,
+                    fp=None,
+                )
+            return f"OK:{access_token}"
+
+        result = mgr.execute_with_retry(flaky_api_call, inject_token_kwarg="access_token")
+        self.assertEqual(result, "OK:fresh_token_2")
+        self.assertEqual(attempts[0], 2)
+        self.assertEqual(refresh_calls[0], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

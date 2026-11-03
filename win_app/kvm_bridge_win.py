@@ -5290,7 +5290,18 @@ class WindowsApplication(QWidget):
             return self.sender.on_dead_key(vk, down)
         if self.sender.handle_jump_key(name, down, vk):
             return True
-        if not self.sender.shortcut_armed:
+        if self.sender.redirecting and down and (
+            name in ("scroll_lock", "pause") or vk in (0x91, 0x13)
+        ):
+            self.sender.set_redirecting(False)
+            try:
+                unclip = getattr(desktop_win, "unclip_cursor", None)
+                if callable(unclip):
+                    unclip()
+            except Exception:
+                pass
+            return True
+        if not self.sender.shortcut_armed and not self.sender.redirecting:
             self._trigger.disarmed(name, down)
             return self.sender.on_key(name, down, vk, us)
         action = self._trigger.feed(name, down, time.monotonic())

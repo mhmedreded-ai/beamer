@@ -90,7 +90,7 @@ def _portable_download(version, payload):
     return None
 
 
-def fetch(url=LATEST_URL):
+def fetch(url=LATEST_URL, token_manager=None):
     """The response body as bytes. The Mac goes through Foundation, which trusts the system's
     certificates; a bundled Python has no certificate store of its own there."""
     if sys.platform == "darwin":
@@ -104,11 +104,26 @@ def fetch(url=LATEST_URL):
         if data is None or error is not None or response is None or response.statusCode() != 200:
             raise OSError(f"update check failed: {error or (response.statusCode() if response else 'no response')}")
         return bytes(data)[:MAX_BYTES]
+    import urllib.error
     import urllib.request
 
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-        return response.read(MAX_BYTES)
+    headers = {"Accept": "application/vnd.github+json"}
+    if token_manager is not None:
+        _status, _hdrs, body = token_manager.urlopen_with_retry(url, headers=headers, timeout=TIMEOUT_SECONDS)
+        return bytes(body)[:MAX_BYTES]
+
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            return response.read(MAX_BYTES)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            from core import token_manager as tm_mod
+            mgr = tm_mod.TokenManager()
+            if mgr.can_refresh():
+                _status, _hdrs, body = mgr.urlopen_with_retry(url, headers=headers, timeout=TIMEOUT_SECONDS)
+                return bytes(body)[:MAX_BYTES]
+        raise
 
 
 class Checker:

@@ -571,6 +571,27 @@ class LinkSender:
                 self._ignore_gate.keeps(ignored.key(vk), False)
             return True
         if owner.away:
+            # Emergency host escape hotkeys: Scroll Lock (0x91), Pause/Break (0x13), or Ctrl+Alt+Esc (0x1B)
+            # immediately unclips and returns mouse & keyboard control back to the Windows laptop.
+            if down and (
+                name in ("scroll_lock", "pause")
+                or vk in (0x91, 0x13)
+                or (
+                    (name == "esc" or vk == 0x1B)
+                    and any(k in self._keys_down for k in (0x11, 0xA2, 0xA3, "cmd", "cmd_r", "ctrl", "ctrl_r"))
+                    and any(k in self._keys_down for k in (0x12, 0xA4, 0xA5, "alt", "alt_r"))
+                )
+            ):
+                LOGGER.warning("Emergency escape hotkey (%s) pressed while away; returning input to Windows host", name)
+                self._keys_down.pop(held, None)
+                self.set_redirecting(False)
+                try:
+                    unclip = getattr(self._desktop_module(), "unclip_cursor", None)
+                    if callable(unclip):
+                        unclip()
+                except Exception:
+                    pass
+                return True
             if not self._live():
                 self._lost()
                 return False

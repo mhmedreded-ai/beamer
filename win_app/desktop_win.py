@@ -381,8 +381,26 @@ def restore_pointer() -> None:
             _restore_pointer()
 
 
+def unclip_cursor() -> None:
+    """Emergency cursor unclip & restore (`ClipCursor(NULL)` + reload system cursors)."""
+    if user32 is None:
+        return
+    try:
+        user32.ClipCursor(None)
+    except Exception:
+        pass
+    try:
+        restore_pointer()
+    except Exception:
+        pass
+
+
 def _restore_pointer() -> None:
     _guard[0] += 1
+    try:
+        user32.ClipCursor(None)
+    except Exception:
+        pass
     if not user32.SystemParametersInfoW(_SPI_SETCURSORS, 0, None, 0):
         LOGGER.warning("Could not reload the system cursors (error %s)", ctypes.get_last_error())
         return

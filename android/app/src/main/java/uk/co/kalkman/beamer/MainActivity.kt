@@ -164,6 +164,11 @@ data class CoreUiState(
     val sameOnAll: Boolean = true,
     val effectStyle: String = "glow",
     val responderEnabled: Boolean = true,
+    val responderDriven: Boolean = false,
+    val screenWidth: Int = 3000,
+    val screenHeight: Int = 1920,
+    val cursorX: Int = 1500,
+    val cursorY: Int = 960,
     val ownerOn: String? = null,
     val edgePressure: Float = 0f,
     val activeEdge: String = "right",
@@ -354,6 +359,11 @@ class MainActivity : ComponentActivity() {
                 sameOnAll = root.optBoolean("same_on_all", true),
                 effectStyle = root.optString("effect_style", "glow"),
                 responderEnabled = root.optBoolean("responder_enabled", true),
+                responderDriven = root.optBoolean("responder_driven", false),
+                screenWidth = root.optInt("screen_width", 3000),
+                screenHeight = root.optInt("screen_height", 1920),
+                cursorX = root.optInt("cursor_x", 1500),
+                cursorY = root.optInt("cursor_y", 960),
                 ownerOn = rawOwner?.takeIf { it.isNotEmpty() },
                 edgePressure = root.optDouble("edge_pressure", 0.0).toFloat(),
                 activeEdge = root.optString("active_edge", "right"),
@@ -474,7 +484,15 @@ fun BeamerAdaptiveShell(
                         .verticalScroll(rememberScrollState())
                         .padding(20.dp)
                 ) {
-                    PermissionWarningBanner(permSnapshot.userNotice, isAr, onDismissNotice)
+                    PermissionWarningBanner(
+                        notice = permSnapshot.userNotice,
+                        isAr = isAr,
+                        onDismiss = onDismissNotice,
+                        permSnapshot = permSnapshot,
+                        onOpenAccessibility = onOpenAccessibility,
+                        onRequestOverlay = onRequestOverlay,
+                        onOpenAppDetails = onOpenAppDetails,
+                    )
                     PageContent(
                         page = currentPage,
                         coreState = coreState,
@@ -508,7 +526,15 @@ fun BeamerAdaptiveShell(
                         .verticalScroll(rememberScrollState())
                         .padding(18.dp)
                 ) {
-                    PermissionWarningBanner(permSnapshot.userNotice, isAr, onDismissNotice)
+                    PermissionWarningBanner(
+                        notice = permSnapshot.userNotice,
+                        isAr = isAr,
+                        onDismiss = onDismissNotice,
+                        permSnapshot = permSnapshot,
+                        onOpenAccessibility = onOpenAccessibility,
+                        onRequestOverlay = onRequestOverlay,
+                        onOpenAppDetails = onOpenAppDetails,
+                    )
                     PageContent(
                         page = currentPage,
                         coreState = coreState,
@@ -579,33 +605,95 @@ fun BeamerAdaptiveShell(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun PermissionWarningBanner(notice: String?, isAr: Boolean, onDismiss: () -> Unit) {
-    if (notice.isNullOrEmpty()) return
+fun PermissionWarningBanner(
+    notice: String?,
+    isAr: Boolean,
+    onDismiss: () -> Unit,
+    permSnapshot: AndroidPermissionSnapshot? = null,
+    onOpenAccessibility: (() -> Unit)? = null,
+    onRequestOverlay: (() -> Unit)? = null,
+    onOpenAppDetails: (() -> Unit)? = null,
+) {
+    val missingInputPerms = permSnapshot != null && (!permSnapshot.accessibilityEnabled || !permSnapshot.overlayGranted)
+    if (notice.isNullOrEmpty() && !missingInputPerms) return
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF3A2E1B)),
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp)
+            .border(1.dp, Color(0xFFF3B452), RoundedCornerShape(10.dp))
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp)
-        ) {
-            Text(
-                text = notice,
-                fontSize = 12.sp,
-                color = Color(0xFFF3B452),
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(
-                onClick = onDismiss,
-                modifier = Modifier.padding(start = 8.dp)
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (isAr) "إخفاء" else "Dismiss", fontSize = 11.sp)
+                Text(
+                    text = if (missingInputPerms) {
+                        if (isAr) {
+                            "⚠️ هام لعمل الماوس والكيبورد على Honor MagicPad 2: يجب تفعيل (خدمة إمكانية الوصول) و(الظهور فوق التطبيقات) ليظهر مؤشر الماوس ويتحرك وينقر على التابلت."
+                        } else {
+                            "⚠️ Required for Remote Mouse & Keyboard: Enable 'Accessibility Service' and 'Display over other apps' so the cursor appears and clicks on your tablet."
+                        }
+                    } else {
+                        notice ?: ""
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFFF3B452),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.padding(start = 8.dp)
+                ) {
+                    Text(if (isAr) "إخفاء" else "Dismiss", fontSize = 11.sp)
+                }
+            }
+            if (missingInputPerms) {
+                Spacer(modifier = Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (permSnapshot?.accessibilityEnabled == false && onOpenAccessibility != null) {
+                        Button(
+                            onClick = onOpenAccessibility,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF3B452))
+                        ) {
+                            Text(
+                                text = if (isAr) "1. تفعيل Accessibility (إمكانية الوصول)" else "1. Enable Accessibility Service",
+                                color = Color(0xFF161714),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    if (permSnapshot?.overlayGranted == false && onRequestOverlay != null) {
+                        Button(
+                            onClick = onRequestOverlay,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(
+                                text = if (isAr) "2. تفعيل الظهور فوق التطبيقات (Overlay)" else "2. Enable Overlay Permission",
+                                color = Color(0xFF161714),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                    if (onOpenAppDetails != null) {
+                        OutlinedButton(onClick = onOpenAppDetails) {
+                            Text(
+                                text = if (isAr) "السماح بالإعدادات المقيدة (App Info)" else "Allow Restricted Settings",
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -668,10 +756,20 @@ fun PageContent(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = if (coreState.ownerOn == null) {
-                            if (isAr) "التحكم حالياً على هذا الجهاز (التابلت / الهاتف)" else "Input is on this Android Tablet / Phone"
-                        } else {
-                            if (isAr) "يتم التحكم حالياً في الجهاز: ${coreState.ownerOn}" else "Driving peer: ${coreState.ownerOn}"
+                        text = when {
+                            coreState.responderDriven -> {
+                                if (isAr) {
+                                    "🖱️ ماوس الكمبيوتر يتحكم في التابلت الآن · الموقع (${coreState.cursorX}, ${coreState.cursorY}) على شاشة ${coreState.screenWidth}×${coreState.screenHeight}"
+                                } else {
+                                    "🖱️ PC Cursor Active on Tablet · Pos (${coreState.cursorX}, ${coreState.cursorY}) on ${coreState.screenWidth}×${coreState.screenHeight}"
+                                }
+                            }
+                            coreState.ownerOn == null -> {
+                                if (isAr) "التحكم حالياً على هذا الجهاز (التابلت / الهاتف)" else "Input is on this Android Tablet / Phone"
+                            }
+                            else -> {
+                                if (isAr) "يتم التحكم حالياً في الجهاز: ${coreState.ownerOn}" else "Driving peer: ${coreState.ownerOn}"
+                            }
                         },
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp,
@@ -700,6 +798,16 @@ fun PageContent(
                         }) {
                             Text(if (isAr) "إظهار كود من 6 أرقام" else "Show 6-digit code")
                         }
+                        Button(
+                            onClick = { onRefreshState(callBridge("return_home")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD96B43))
+                        ) {
+                            Text(
+                                text = if (isAr) "⏎ إرجاع الماوس للكمبيوتر فوراً" else "⏎ Force Return Cursor to PC",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                         OutlinedButton(onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                             val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString() ?: ""
@@ -708,11 +816,6 @@ fun PageContent(
                             }
                         }) {
                             Text(if (isAr) "مزامنة الحافظة" else "Sync Clipboard")
-                        }
-                        if (coreState.ownerOn != null) {
-                            OutlinedButton(onClick = { onRefreshState(callBridge("return_home")) }) {
-                                Text(if (isAr) "إرجاع الماوس للتابلت" else "Return input home")
-                            }
                         }
                     }
 

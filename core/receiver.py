@@ -115,7 +115,7 @@ MAX_HANDSHAKE_THREADS = 32
 # slow but working peer keeps going while bytes move (section 3, liveness).
 SEND_CHUNK = 64 * 1024
 # No byte at all for this long ends a link (section 3, liveness).
-LINK_READ_TIMEOUT_SECONDS = 2.5
+LINK_READ_TIMEOUT_SECONDS = 1.5
 # A send-home the owner does not obey within this ends its ownership by force, and after either the
 # initiator is refused `sent_home` for SENT_HOME_SECONDS (section 4).
 FORCED_END_SECONDS = 1.0
