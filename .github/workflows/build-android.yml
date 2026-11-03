@@ -202,21 +202,49 @@ jobs:
           $ADB shell uiautomator dump /sdcard/window_dump.xml
           $ADB pull /sdcard/window_dump.xml "dist-apk/magicpad2-ui-dump.xml"
 
-          # Verify Python core bridge initialized cleanly ("Wire v6") and no startup errors occurred
+          # Verify Python core bridge initialized cleanly ("Wire v6") and Press Nearby + Arabic UI are present
           grep -q "Wire v6" "dist-apk/magicpad2-ui-dump.xml"
           grep -q "BEAMER" "dist-apk/magicpad2-ui-dump.xml"
+          grep -q "Press Nearby" "dist-apk/magicpad2-ui-dump.xml"
           if grep -q "Python core init:" "dist-apk/magicpad2-ui-dump.xml"; then
             echo "ERROR: Python core init error found on screen!"
             cat "dist-apk/magicpad2-ui-dump.xml"
             exit 1
           fi
 
-          # Tap Overview tab in NavigationRail & simulate trackpad drag on the right pane
-          $ADB shell input tap 55 155
-          sleep 2
-          $ADB shell input swipe 2100 700 2550 920 250
-          sleep 2
+          # Tap "Press Nearby" button dynamically from UI dump and capture Arabic RTL screenshot
+          NEARBY_TAP=$(python3 -c '
+          import xml.etree.ElementTree as ET, re
+          tree = ET.parse("dist-apk/magicpad2-ui-dump.xml")
+          for el in tree.iter():
+              if "Press Nearby" in el.attrib.get("text", ""):
+                  m = re.findall(r"\d+", el.attrib.get("bounds", ""))
+                  if len(m) == 4:
+                      print((int(m[0])+int(m[2]))//2, (int(m[1])+int(m[3]))//2)
+                      break
+          ')
+          if [ -n "$NEARBY_TAP" ]; then
+            $ADB shell input tap $NEARBY_TAP
+            sleep 2
+          fi
           $ADB exec-out screencap -p > "dist-apk/Honor-MagicPad-2-Overview-Screen.png"
+
+          # Tap "English" toggle button dynamically and capture English LTR screenshot
+          LANG_TAP=$(python3 -c '
+          import xml.etree.ElementTree as ET, re
+          tree = ET.parse("dist-apk/magicpad2-ui-dump.xml")
+          for el in tree.iter():
+              if "English" in el.attrib.get("text", ""):
+                  m = re.findall(r"\d+", el.attrib.get("bounds", ""))
+                  if len(m) == 4:
+                      print((int(m[0])+int(m[2]))//2, (int(m[1])+int(m[3]))//2)
+                      break
+          ')
+          if [ -n "$LANG_TAP" ]; then
+            $ADB shell input tap $LANG_TAP
+            sleep 2
+          fi
+          $ADB exec-out screencap -p > "dist-apk/Honor-MagicPad-2-Permissions-Screen.png"
 
           # Verify app is still alive after interactions and zero FATAL EXCEPTION occurred
           APP_PID_AFTER=$($ADB shell pidof uk.co.kalkman.beamer | tr -d '\r')

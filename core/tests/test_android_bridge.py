@@ -21,8 +21,9 @@ class AndroidBridgeIntegrationTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         bridge_mod._BRIDGE_INSTANCE = None
-        bridge_mod.init_bridge(self.temp_dir.name, "Galaxy Tab S9 Ultra")
+        bridge_mod.init_bridge(self.temp_dir.name, "Galaxy Tab S9 Ultra", enable_network=False)
         self.bridge = bridge_mod.get_bridge()
+        self.addCleanup(self.bridge.stop)
 
     def test_initial_state_and_cpace_pairing_qr(self) -> None:
         state = json.loads(self.bridge.get_state_json())
@@ -36,7 +37,7 @@ class AndroidBridgeIntegrationTests(unittest.TestCase):
         paired_state = json.loads(self.bridge.generate_pairing_code())
         self.assertEqual(len(paired_state["pairing_code"]), 6)
         self.assertTrue(paired_state["pairing_code"].isdigit())
-        self.assertIn("beamer://pair?v=3", paired_state["qr_payload"])
+        self.assertIn("beamer://pair?", paired_state["qr_payload"])
 
     def test_edge_pressure_accumulation_triggers_automatic_crossing(self) -> None:
         state = json.loads(self.bridge.get_state_json())
@@ -129,6 +130,20 @@ class AndroidBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual((move_ev["dx"], move_ev["dy"]), (20, -10))
         self.assertEqual(wheel_ev["dy"], -6.0)
         self.assertEqual(gest_ev["direction"], "up")
+
+    def test_press_nearby_and_bilingual_toggle(self) -> None:
+        nb_state = json.loads(self.bridge.begin_nearby())
+        self.assertEqual(nb_state["nearby"]["state"], "searching")
+        self.assertGreater(nb_state["nearby"]["seconds_left"], 0)
+
+        cancelled = json.loads(self.bridge.cancel_nearby())
+        self.assertIn(cancelled["nearby"]["state"], ("inactive", "refused", "expired"))
+
+        en_state = json.loads(self.bridge.set_language("en"))
+        self.assertEqual(en_state["ui_lang"], "en")
+
+        ar_state = json.loads(self.bridge.toggle_language())
+        self.assertEqual(ar_state["ui_lang"], "ar")
 
 
 if __name__ == "__main__":

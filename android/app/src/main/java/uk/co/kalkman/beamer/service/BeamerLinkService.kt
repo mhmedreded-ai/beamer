@@ -37,6 +37,7 @@ class BeamerLinkService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -113,6 +114,11 @@ class BeamerLinkService : Service() {
                 WifiManager.WIFI_MODE_FULL_HIGH_PERF
             }
             wifiLock = wm?.createWifiLock(lockMode, "Beamer::KvmLowLatencyWifiLock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            // Essential for UDP 24821 Broadcast Beacons & "Press Nearby" (Easy Pair) on Android / MagicOS
+            multicastLock = wm?.createMulticastLock("Beamer::DiscoveryMulticastLock")?.apply {
                 setReferenceCounted(false)
                 acquire()
             }
@@ -222,6 +228,10 @@ class BeamerLinkService : Service() {
         }
         try {
             if (wifiLock?.isHeld == true) wifiLock?.release()
+        } catch (_: Throwable) {
+        }
+        try {
+            if (multicastLock?.isHeld == true) multicastLock?.release()
         } catch (_: Throwable) {
         }
         super.onDestroy()

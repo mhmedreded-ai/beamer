@@ -26,9 +26,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -48,6 +48,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -64,12 +66,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.chaquo.python.Python
 import kotlin.math.hypot
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 import uk.co.kalkman.beamer.permissions.AndroidPermissionSnapshot
 import uk.co.kalkman.beamer.permissions.BeamerPermissionManager
@@ -93,7 +98,6 @@ class LogicalMotionAccumulator(
         val dpX = rawPxX / safeDensity
         val dpY = rawPxY / safeDensity
         val magnitude = hypot(dpX, dpY)
-        // Smooth acceleration curve (1.0x for fine precision, up to 1.85x for fast sweeps)
         val accel = (1.0f + (magnitude / 28.0f).coerceAtMost(0.85f)) * pointerSpeed.coerceIn(0.25f, 4.0f)
 
         val totalX = (dpX * accel) + remX
@@ -120,10 +124,37 @@ data class PeerItem(
     val side: String,
 )
 
+data class NearbyCandidateItem(
+    val name: String,
+    val address: String,
+    val platform: String,
+)
+
+data class NearbyUiState(
+    val state: String = "inactive",
+    val secondsLeft: Int = 0,
+    val sas: String = "",
+    val attempt: String = "",
+    val peerName: String = "",
+    val peerAddress: String = "",
+    val candidates: List<NearbyCandidateItem> = emptyList(),
+)
+
+data class DiscoveredMachineItem(
+    val name: String,
+    val address: String,
+    val port: Int,
+    val platform: String,
+    val hasCode: Boolean,
+    val nearbyActive: Boolean,
+)
+
 data class CoreUiState(
     val wireVersion: Int = 6,
     val machineId: String = "",
     val deviceName: String = "Android Tablet",
+    val localIp: String = "",
+    val uiLang: String = "ar",
     val port: Int = 24820,
     val pairingPort: Int = 24821,
     val resistancePx: Int = 120,
@@ -138,17 +169,21 @@ data class CoreUiState(
     val activeEdge: String = "right",
     val pairingCode: String = "",
     val lastEvent: String = "Ready",
+    val nearby: NearbyUiState = NearbyUiState(),
+    val discovered: List<DiscoveredMachineItem> = emptyList(),
     val peers: List<PeerItem> = emptyList(),
     val availableStyles: List<String> = listOf("glow", "beam", "aperture"),
 )
 
-enum class BeamerPage(val key: String, val title: String, val badge: String) {
-    OVERVIEW("overview", "Overview", "OV"),
-    PERMISSIONS("permissions", "Permissions", "PM"),
-    CROSSING("crossing", "Crossing", "CR"),
-    KEYBOARD("keyboard", "Keyboard", "KB"),
-    DESIGN("design", "Design", "DS"),
-    CONNECTION("connection", "Connection", "CN"),
+enum class BeamerPage(val key: String, val titleEn: String, val titleAr: String, val badge: String) {
+    OVERVIEW("overview", "Overview", "نظرة عامة", "OV"),
+    PERMISSIONS("permissions", "Permissions", "الصلاحيات", "PM"),
+    CROSSING("crossing", "Crossing", "العبور", "CR"),
+    KEYBOARD("keyboard", "Keyboard", "الكيبورد", "KB"),
+    DESIGN("design", "Design", "التصميم", "DS"),
+    CONNECTION("connection", "Connection", "الشبكة", "CN");
+
+    fun title(isAr: Boolean): String = if (isAr) titleAr else titleEn
 }
 
 private val BeamerDarkPalette = darkColorScheme(
@@ -169,23 +204,38 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         permissionManager = BeamerPermissionManager(this)
         BeamerApplication.ensureBridgeReady(this)
+        startBeamerForegroundService()
 
         setContent {
             MaterialTheme(colorScheme = BeamerDarkPalette) {
                 val permSnapshot by permissionManager.state.collectAsState()
                 var coreState by remember { mutableStateOf(loadCoreState()) }
 
-                BeamerAdaptiveShell(
-                    coreState = coreState,
-                    permSnapshot = permSnapshot,
-                    onRefreshState = { json -> coreState = parseCoreState(json) },
-                    onDismissNotice = { permissionManager.dismissNotice() },
-                    onRequestStandardPerms = { permissionManager.requestStandardPermissions(includeCamera = true) },
-                    onRequestOverlay = { permissionManager.requestOverlayPermission() },
-                    onOpenAccessibility = { permissionManager.openAccessibilitySettings() },
-                    onRequestBatteryExemption = { permissionManager.requestIgnoreBatteryOptimizations() },
-                    onStartLinkService = { startBeamerForegroundService() },
-                )
+                // Poll state every 800ms so Press Nearby SAS codes, countdowns, and LAN discovery update live
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        delay(800L)
+                        coreState = loadCoreState()
+                    }
+                }
+
+                val isAr = coreState.uiLang == "ar"
+                CompositionLocalProvider(
+                    LocalLayoutDirection provides if (isAr) LayoutDirection.Rtl else LayoutDirection.Ltr
+                ) {
+                    BeamerAdaptiveShell(
+                        coreState = coreState,
+                        permSnapshot = permSnapshot,
+                        onRefreshState = { json -> coreState = parseCoreState(json) },
+                        onDismissNotice = { permissionManager.dismissNotice() },
+                        onRequestStandardPerms = { permissionManager.requestStandardPermissions(includeCamera = true) },
+                        onRequestOverlay = { permissionManager.requestOverlayPermission() },
+                        onOpenAccessibility = { permissionManager.openAccessibilitySettings() },
+                        onRequestBatteryExemption = { permissionManager.requestIgnoreBatteryOptimizations() },
+                        onOpenAppDetails = { permissionManager.openAppDetailsSettings() },
+                        onStartLinkService = { startBeamerForegroundService() },
+                    )
+                }
             }
         }
     }
@@ -203,8 +253,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 startService(serviceIntent)
             }
-        } catch (_: Exception) {
-            // Avoid crash if background start is restricted before user grants notification permission
+        } catch (_: Throwable) {
         }
     }
 
@@ -245,11 +294,57 @@ class MainActivity : ComponentActivity() {
                     styles += stylesArray.getString(i)
                 }
             }
+
+            val nearbyObj = root.optJSONObject("nearby")
+            val nearbyState = if (nearbyObj != null) {
+                val candsArr = nearbyObj.optJSONArray("candidates")
+                val cands = mutableListOf<NearbyCandidateItem>()
+                if (candsArr != null) {
+                    for (i in 0 until candsArr.length()) {
+                        val c = candsArr.getJSONObject(i)
+                        cands += NearbyCandidateItem(
+                            name = c.optString("name", "Machine"),
+                            address = c.optString("address", ""),
+                            platform = c.optString("platform", "desktop"),
+                        )
+                    }
+                }
+                NearbyUiState(
+                    state = nearbyObj.optString("state", "inactive"),
+                    secondsLeft = nearbyObj.optInt("seconds_left", 0),
+                    sas = nearbyObj.optString("sas", ""),
+                    attempt = nearbyObj.optString("attempt", ""),
+                    peerName = nearbyObj.optString("peer_name", ""),
+                    peerAddress = nearbyObj.optString("peer_address", ""),
+                    candidates = cands,
+                )
+            } else {
+                NearbyUiState()
+            }
+
+            val discArr = root.optJSONArray("discovered")
+            val discovered = mutableListOf<DiscoveredMachineItem>()
+            if (discArr != null) {
+                for (i in 0 until discArr.length()) {
+                    val d = discArr.getJSONObject(i)
+                    discovered += DiscoveredMachineItem(
+                        name = d.optString("name", "Machine"),
+                        address = d.optString("address", ""),
+                        port = d.optInt("port", 24820),
+                        platform = d.optString("platform", "desktop"),
+                        hasCode = d.optBoolean("has_code", false),
+                        nearbyActive = d.optBoolean("nearby_active", false),
+                    )
+                }
+            }
+
             val rawOwner = if (root.isNull("owner_on")) null else root.optString("owner_on")
             CoreUiState(
                 wireVersion = root.optInt("wire_version", 6),
                 machineId = root.optString("machine_id", ""),
                 deviceName = root.optString("name", "Android Tablet"),
+                localIp = root.optString("local_ip", ""),
+                uiLang = root.optString("ui_lang", "ar"),
                 port = root.optInt("port", 24820),
                 pairingPort = root.optInt("pairing_port", 24821),
                 resistancePx = root.optInt("resistance_px", 120),
@@ -264,6 +359,8 @@ class MainActivity : ComponentActivity() {
                 activeEdge = root.optString("active_edge", "right"),
                 pairingCode = root.optString("pairing_code", ""),
                 lastEvent = root.optString("last_event", "Ready"),
+                nearby = nearbyState,
+                discovered = discovered,
                 peers = peers,
                 availableStyles = if (styles.isNotEmpty()) styles else listOf("glow", "beam", "aperture"),
             )
@@ -293,18 +390,17 @@ fun BeamerAdaptiveShell(
     onRequestOverlay: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenAppDetails: () -> Unit,
     onStartLinkService: () -> Unit,
 ) {
     val config = LocalConfiguration.current
-    // Three-tier responsive breakpoints optimized for Honor MagicPad 2 (3000x1920, 290dpi), Tablet Split-Screen, and Compact
+    val isAr = coreState.uiLang == "ar"
     val isExpandedTablet = config.screenWidthDp >= 800
     val isMediumSplitTablet = config.screenWidthDp in 580..799
     val useTwoPane = isExpandedTablet || (isMediumSplitTablet && config.screenWidthDp > config.screenHeightDp)
 
     var currentPage by remember {
-        mutableStateOf(
-            if (permSnapshot.canRespondWithVisuals) BeamerPage.OVERVIEW else BeamerPage.PERMISSIONS
-        )
+        mutableStateOf(BeamerPage.OVERVIEW)
     }
 
     if (useTwoPane || isMediumSplitTablet) {
@@ -317,14 +413,31 @@ fun BeamerAdaptiveShell(
                 containerColor = Color(0xFF1B1C18),
                 modifier = Modifier.fillMaxHeight()
             ) {
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = "BEAMER",
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 10.dp)
+                    modifier = Modifier.padding(bottom = 6.dp)
                 )
+                // Instant Arabic / English Language Toggle Pill in NavigationRail
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .padding(bottom = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF2B3538))
+                        .clickable { onRefreshState(callBridge("toggle_language")) }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (isAr) "EN / ع" else "عربي / EN",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp
+                    )
+                }
                 BeamerPage.entries.forEach { page ->
                     val needsAttention = page == BeamerPage.PERMISSIONS && !permSnapshot.canRespondWithVisuals
                     NavigationRailItem(
@@ -348,21 +461,20 @@ fun BeamerAdaptiveShell(
                                 )
                             }
                         },
-                        label = { Text(page.title, fontSize = 11.sp) }
+                        label = { Text(page.title(isAr), fontSize = 11.sp) }
                     )
                 }
             }
 
             if (useTwoPane) {
-                // Full Tablet Landscape / Expanded: Dual-pane side-by-side Settings + Interactive Trackpad
                 Column(
                     modifier = Modifier
-                        .weight(0.50f)
+                        .weight(0.52f)
                         .fillMaxHeight()
                         .verticalScroll(rememberScrollState())
                         .padding(20.dp)
                 ) {
-                    PermissionWarningBanner(permSnapshot.userNotice, onDismissNotice)
+                    PermissionWarningBanner(permSnapshot.userNotice, isAr, onDismissNotice)
                     PageContent(
                         page = currentPage,
                         coreState = coreState,
@@ -372,13 +484,14 @@ fun BeamerAdaptiveShell(
                         onRequestOverlay = onRequestOverlay,
                         onOpenAccessibility = onOpenAccessibility,
                         onRequestBatteryExemption = onRequestBatteryExemption,
+                        onOpenAppDetails = onOpenAppDetails,
                         onStartLinkService = onStartLinkService,
                     )
                 }
 
                 Column(
                     modifier = Modifier
-                        .weight(0.50f)
+                        .weight(0.48f)
                         .fillMaxHeight()
                         .padding(top = 20.dp, end = 20.dp, bottom = 20.dp)
                 ) {
@@ -388,7 +501,6 @@ fun BeamerAdaptiveShell(
                     )
                 }
             } else {
-                // Medium Tablet Portrait / Split-Screen: NavigationRail + Stacked Scrollable Content & Trackpad
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -396,7 +508,7 @@ fun BeamerAdaptiveShell(
                         .verticalScroll(rememberScrollState())
                         .padding(18.dp)
                 ) {
-                    PermissionWarningBanner(permSnapshot.userNotice, onDismissNotice)
+                    PermissionWarningBanner(permSnapshot.userNotice, isAr, onDismissNotice)
                     PageContent(
                         page = currentPage,
                         coreState = coreState,
@@ -406,6 +518,7 @@ fun BeamerAdaptiveShell(
                         onRequestOverlay = onRequestOverlay,
                         onOpenAccessibility = onOpenAccessibility,
                         onRequestBatteryExemption = onRequestBatteryExemption,
+                        onOpenAppDetails = onOpenAppDetails,
                         onStartLinkService = onStartLinkService,
                     )
                     Spacer(modifier = Modifier.height(16.dp))
@@ -419,7 +532,6 @@ fun BeamerAdaptiveShell(
             }
         }
     } else {
-        // Compact Multi-Window / Phone Layout
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
@@ -429,7 +541,7 @@ fun BeamerAdaptiveShell(
                             selected = currentPage == page,
                             onClick = { currentPage = page },
                             icon = { Text(page.badge, fontWeight = FontWeight.Bold, fontSize = 11.sp) },
-                            label = { Text(page.title, fontSize = 10.sp) }
+                            label = { Text(page.title(isAr), fontSize = 10.sp) }
                         )
                     }
                 }
@@ -442,7 +554,7 @@ fun BeamerAdaptiveShell(
                     .verticalScroll(rememberScrollState())
                     .padding(16.dp)
             ) {
-                PermissionWarningBanner(permSnapshot.userNotice, onDismissNotice)
+                PermissionWarningBanner(permSnapshot.userNotice, isAr, onDismissNotice)
                 PageContent(
                     page = currentPage,
                     coreState = coreState,
@@ -452,6 +564,7 @@ fun BeamerAdaptiveShell(
                     onRequestOverlay = onRequestOverlay,
                     onOpenAccessibility = onOpenAccessibility,
                     onRequestBatteryExemption = onRequestBatteryExemption,
+                    onOpenAppDetails = onOpenAppDetails,
                     onStartLinkService = onStartLinkService,
                 )
                 Spacer(modifier = Modifier.height(16.dp))
@@ -467,7 +580,7 @@ fun BeamerAdaptiveShell(
 }
 
 @Composable
-fun PermissionWarningBanner(notice: String?, onDismiss: () -> Unit) {
+fun PermissionWarningBanner(notice: String?, isAr: Boolean, onDismiss: () -> Unit) {
     if (notice.isNullOrEmpty()) return
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF3A2E1B)),
@@ -492,7 +605,7 @@ fun PermissionWarningBanner(notice: String?, onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 modifier = Modifier.padding(start = 8.dp)
             ) {
-                Text("Dismiss", fontSize = 11.sp)
+                Text(if (isAr) "إخفاء" else "Dismiss", fontSize = 11.sp)
             }
         }
     }
@@ -509,18 +622,37 @@ fun PageContent(
     onRequestOverlay: () -> Unit,
     onOpenAccessibility: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onOpenAppDetails: () -> Unit,
     onStartLinkService: () -> Unit,
 ) {
     val context = LocalContext.current
+    val isAr = coreState.uiLang == "ar"
 
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = page.title(isAr),
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        OutlinedButton(
+            onClick = { onRefreshState(callBridge("toggle_language")) }
+        ) {
+            Text(
+                text = if (isAr) "🌐 English" else "🌐 العربية",
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp
+            )
+        }
+    }
+
+    val ipLabel = if (coreState.localIp.isNotEmpty()) " · IP ${coreState.localIp}" else ""
     Text(
-        text = page.title,
-        fontSize = 24.sp,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onBackground
-    )
-    Text(
-        text = "Wire v${coreState.wireVersion} · ID ${coreState.machineId.take(10)}… · ${coreState.lastEvent}",
+        text = "Wire v${coreState.wireVersion} · ID ${coreState.machineId.take(10)}…$ipLabel · ${coreState.lastEvent}",
         fontSize = 12.sp,
         color = Color(0xFF9EA096),
         fontFamily = FontFamily.Monospace,
@@ -529,28 +661,44 @@ fun PageContent(
 
     when (page) {
         BeamerPage.OVERVIEW -> {
+            // 1. Main Status & Quick Pairing Actions ("Press Nearby" + "6-digit Code" + "Clipboard")
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        text = if (coreState.ownerOn == null) "Input is on this Android Tablet"
-                        else "Driving peer: ${coreState.ownerOn}",
+                        text = if (coreState.ownerOn == null) {
+                            if (isAr) "التحكم حالياً على هذا الجهاز (التابلت / الهاتف)" else "Input is on this Android Tablet / Phone"
+                        } else {
+                            if (isAr) "يتم التحكم حالياً في الجهاز: ${coreState.ownerOn}" else "Driving peer: ${coreState.ownerOn}"
+                        },
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 16.sp,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Button(onClick = {
+                        Button(
+                            onClick = {
+                                onStartLinkService()
+                                onRefreshState(callBridge("begin_nearby"))
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(
+                                text = if (isAr) "📡 اقتران قريب (Press Nearby)" else "📡 Press Nearby (Easy Pair)",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        OutlinedButton(onClick = {
                             onStartLinkService()
                             onRefreshState(callBridge("generate_pairing_code"))
                         }) {
-                            Text("Pair a machine (6-digit code)")
+                            Text(if (isAr) "إظهار كود من 6 أرقام" else "Show 6-digit code")
                         }
                         OutlinedButton(onClick = {
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -559,14 +707,132 @@ fun PageContent(
                                 onRefreshState(callBridge("on_local_clipboard_changed", clipText))
                             }
                         }) {
-                            Text("Sync Clipboard")
+                            Text(if (isAr) "مزامنة الحافظة" else "Sync Clipboard")
                         }
                         if (coreState.ownerOn != null) {
                             OutlinedButton(onClick = { onRefreshState(callBridge("return_home")) }) {
-                                Text("Return input home")
+                                Text(if (isAr) "إرجاع الماوس للتابلت" else "Return input home")
                             }
                         }
                     }
+
+                    // Active "Press Nearby" (EasyPairWindow SAS v1) Live Status Box
+                    if (coreState.nearby.state != "inactive") {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1B292D)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp))
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = if (isAr) {
+                                            "📡 الاقتران القريب السريع نشط (${coreState.nearby.secondsLeft} ثانية)"
+                                        } else {
+                                            "📡 Press Nearby Active (${coreState.nearby.secondsLeft}s left)"
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontSize = 14.sp
+                                    )
+                                    OutlinedButton(onClick = { onRefreshState(callBridge("cancel_nearby")) }) {
+                                        Text(if (isAr) "إلغاء" else "Cancel", fontSize = 11.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                when (coreState.nearby.state) {
+                                    "searching", "exchanging" -> {
+                                        Text(
+                                            text = if (isAr) {
+                                                "اضغط الآن على زر (Press Nearby) في برنامج Beamer على الكمبيوتر أو الهاتف الآخر المتصل بنفس شبكة الـ Wi-Fi ليتم الاكتشاف والربط تلقائياً…"
+                                            } else {
+                                                "Now press 'Press Nearby' in Beamer on your PC, Mac, or phone on the same Wi-Fi network…"
+                                            },
+                                            fontSize = 13.sp,
+                                            color = Color(0xFFD5D6CE)
+                                        )
+                                    }
+                                    "choosing" -> {
+                                        Text(
+                                            text = if (isAr) "اختر الجهاز القريب المراد الاقتران به:" else "Select the nearby device to pair with:",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        coreState.nearby.candidates.forEach { cand ->
+                                            Button(
+                                                onClick = { onRefreshState(callBridge("choose_nearby", cand.address)) },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 3.dp)
+                                            ) {
+                                                Text("${cand.name} (${cand.platform}) · ${cand.address}")
+                                            }
+                                        }
+                                    }
+                                    "confirm", "waiting" -> {
+                                        Text(
+                                            text = if (isAr) {
+                                                "تأكد من تطابق هذا الرقم مع جهاز (${coreState.nearby.peerName}):"
+                                            } else {
+                                                "Confirm this verification code matches on ${coreState.nearby.peerName}:"
+                                            },
+                                            fontSize = 13.sp,
+                                            color = Color(0xFFD5D6CE)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = coreState.nearby.sas,
+                                            fontSize = 32.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        if (coreState.nearby.state == "confirm") {
+                                            Button(
+                                                onClick = { onRefreshState(callBridge("confirm_nearby")) },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3E8E5A))
+                                            ) {
+                                                Text(
+                                                    text = if (isAr) "✓ تأكيد التطابق والاقتران الآن" else "✓ Confirm Match & Pair Now",
+                                                    color = Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        } else {
+                                            Text(
+                                                text = if (isAr) "بانتظار التأكيد على الجهاز الآخر…" else "Waiting for confirmation on the other device…",
+                                                fontSize = 12.sp,
+                                                color = Color(0xFFF3B452)
+                                            )
+                                        }
+                                    }
+                                    "paired" -> {
+                                        Text(
+                                            text = if (isAr) "✓ تم الاقتران بنجاح!" else "✓ Paired successfully!",
+                                            color = Color(0xFF4CAF50),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    else -> {
+                                        Text(
+                                            text = if (isAr) "الحالة: ${coreState.nearby.state}" else "State: ${coreState.nearby.state}",
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Active 6-digit CPace Host Code Box
                     if (coreState.pairingCode.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
@@ -577,7 +843,11 @@ fun PageContent(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "Listening on UDP/TCP ${coreState.pairingPort} for CPace exchange",
+                            text = if (isAr) {
+                                "أدخل هذا الكود في الكمبيوتر أو الهاتف الآخر (منفذ UDP/TCP ${coreState.pairingPort} · عنوان IP: ${coreState.localIp.ifEmpty { "Wi-Fi" }})"
+                            } else {
+                                "Enter this code on the other device (UDP/TCP ${coreState.pairingPort} · IP: ${coreState.localIp.ifEmpty { "Wi-Fi" }})"
+                            },
                             fontSize = 12.sp,
                             color = Color(0xFF9EA096)
                         )
@@ -585,8 +855,79 @@ fun PageContent(
                 }
             }
 
+            // 2. Discovered LAN Machines & Quick Connect by IP + 6-Digit Code
+            Spacer(modifier = Modifier.height(14.dp))
+            var targetIp by remember { mutableStateOf("") }
+            var targetCode by remember { mutableStateOf("") }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = if (isAr) "الاتصال بجهاز آخر يعرض كود من 6 أرقام" else "Connect to a Device Showing a 6-Digit Code",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 15.sp
+                    )
+                    if (coreState.discovered.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (isAr) "أجهزة مكتشفة تلقائياً على نفس الـ Wi-Fi (اضغط لاختيارها):" else "Auto-discovered on Wi-Fi (tap to select):",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            coreState.discovered.forEach { mach ->
+                                OutlinedButton(onClick = { targetIp = mach.address }) {
+                                    Text("${mach.name} (${mach.address})", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = targetIp,
+                            onValueChange = { targetIp = it },
+                            label = { Text(if (isAr) "عنوان IP للجهاز الآخر" else "Other Device IP (e.g. 192.168.1.x)") },
+                            modifier = Modifier.weight(0.55f),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = targetCode,
+                            onValueChange = { targetCode = it.take(6) },
+                            label = { Text(if (isAr) "الكود (6 أرقام)" else "6-Digit Code") },
+                            modifier = Modifier.weight(0.45f),
+                            singleLine = true
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            onStartLinkService()
+                            onRefreshState(callBridge("pair_by_ip", targetIp, targetCode, coreState.pairingPort))
+                        }
+                    ) {
+                        Text(if (isAr) "🔗 اقتران واتصال الآن" else "🔗 Pair & Connect Now")
+                    }
+                }
+            }
+
+            // 3. Paired Machines List
             Spacer(modifier = Modifier.height(16.dp))
-            Text("Paired Machines", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text(
+                text = if (isAr) "الأجهزة المقترنة (${coreState.peers.size})" else "Paired Machines (${coreState.peers.size})",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp
+            )
             Spacer(modifier = Modifier.height(8.dp))
             coreState.peers.forEach { peer ->
                 Card(
@@ -605,7 +946,7 @@ fun PageContent(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("${peer.name} (${peer.platform})", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "${peer.host}:${peer.port} · Edge: ${peer.side}",
+                                "${peer.host}:${peer.port} · ${if (isAr) "الحافة:" else "Edge:"} ${peer.side}",
                                 fontSize = 12.sp,
                                 color = Color(0xFF9EA096),
                                 fontFamily = FontFamily.Monospace
@@ -618,7 +959,13 @@ fun PageContent(
                                 else MaterialTheme.colorScheme.primary
                             )
                         ) {
-                            Text(if (coreState.ownerOn == peer.id) "Driving" else "Send input")
+                            Text(
+                                if (coreState.ownerOn == peer.id) {
+                                    if (isAr) "متصل ويتحكم" else "Driving"
+                                } else {
+                                    if (isAr) "إرسال الماوس والكيبورد" else "Send input"
+                                }
+                            )
                         }
                     }
                 }
@@ -627,33 +974,64 @@ fun PageContent(
 
         BeamerPage.PERMISSIONS -> {
             PermissionRowCard(
-                title = "Foreground Link & QR Camera (POST_NOTIFICATIONS / CAMERA)",
-                description = "Keeps encrypted TCP 24820 links active and allows scanning desktop QR codes.",
+                title = if (isAr) "خدمة الخلفية والكاميرا (الإشعارات ومسح QR)" else "Foreground Link & QR Camera (POST_NOTIFICATIONS / CAMERA)",
+                description = if (isAr) "لإبقاء اتصال TCP 24820 المشفر نشطاً ومسح رمز QR الخاص بالكمبيوتر." else "Keeps encrypted TCP 24820 links active and allows scanning desktop QR codes.",
                 granted = permSnapshot.notificationsGranted && permSnapshot.cameraGranted,
-                buttonText = "Grant Runtime Permissions",
+                buttonText = if (isAr) "منح الصلاحيات الأساسية" else "Grant Runtime Permissions",
+                readyText = if (isAr) "مفعّل وجاهز" else "Ready",
                 onClick = onRequestStandardPerms
             )
             PermissionRowCard(
-                title = "Unrestricted Battery & Low-Latency Wi-Fi Lock",
-                description = "Prevents Android Doze from throttling BeamerLinkService while driving another machine.",
+                title = if (isAr) "استثناء توفير البطارية وقفل الـ Wi-Fi فائق السرعة" else "Unrestricted Battery & Low-Latency Wi-Fi Lock",
+                description = if (isAr) "يمنع نظام Android / MagicOS من إيقاف الخدمة أثناء التحكم في الأجهزة الأخرى." else "Prevents Android Doze from throttling BeamerLinkService while driving another machine.",
                 granted = permSnapshot.batteryOptimizationIgnored,
-                buttonText = "Disable Battery Optimization",
+                buttonText = if (isAr) "إيقاف قيود البطارية" else "Disable Battery Optimization",
+                readyText = if (isAr) "مفعّل وجاهز" else "Ready",
                 onClick = onRequestBatteryExemption
             )
             PermissionRowCard(
-                title = "Edge Glow & Cursor Overlay (SYSTEM_ALERT_WINDOW)",
-                description = "Draws Beamer's crossing effects (Glow, Beam, Aperture) at the tablet's screen edges.",
+                title = if (isAr) "الظهور فوق التطبيقات وتأثيرات الحواف (SYSTEM_ALERT_WINDOW)" else "Edge Glow & Cursor Overlay (SYSTEM_ALERT_WINDOW)",
+                description = if (isAr) "لرسم مؤشر الماوس وتأثيرات العبور الضوئية عند حواف شاشة التابلت." else "Draws Beamer's crossing effects (Glow, Beam, Aperture) at the tablet's screen edges.",
                 granted = permSnapshot.overlayGranted,
-                buttonText = "Open Overlay Settings",
+                buttonText = if (isAr) "فتح إعدادات الظهور فوق التطبيقات" else "Open Overlay Settings",
+                readyText = if (isAr) "مفعّل وجاهز" else "Ready",
                 onClick = onRequestOverlay
             )
             PermissionRowCard(
-                title = "Accessibility Input Bridge (BIND_ACCESSIBILITY_SERVICE)",
-                description = "Allows a paired Mac, Windows PC, or Linux desktop to move the pointer and inject gestures on this tablet.",
+                title = if (isAr) "خدمة إمكانية الوصول للتحكم بالتابلت (Accessibility Service)" else "Accessibility Input Bridge (BIND_ACCESSIBILITY_SERVICE)",
+                description = if (isAr) "تسمح للكمبيوتر أو الهاتف الآخر بتحريك المؤشر والنقر والتمرير داخل شاشة التابلت." else "Allows a paired Mac, Windows PC, or phone to move the pointer and inject gestures on this tablet.",
                 granted = permSnapshot.accessibilityEnabled,
-                buttonText = "Open Accessibility Settings",
+                buttonText = if (isAr) "فتح إعدادات إمكانية الوصول" else "Open Accessibility Settings",
+                readyText = if (isAr) "مفعّل وجاهز" else "Ready",
                 onClick = onOpenAccessibility
             )
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = if (isAr) "فك الإعدادات المقيدة في Android 15 / 16 و Honor MagicPad 2" else "Unlock Restricted Settings (Android 15 / 16 & Honor MagicOS)",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isAr) {
+                            "إذا ظهرت رسالة (إعداد مقيّد / Restricted setting) عند تفعيل إمكانية الوصول، اضغط الزر أدناه لفتح معلومات التطبيق ثم اضغط (⋮) في الأعلى واختر (السماح بالإعدادات المقيدة)."
+                        } else {
+                            "If Android 15/16 shows 'Restricted setting' when enabling Accessibility, tap below to open App Info, tap the top-right (⋮) menu, and choose 'Allow restricted settings'."
+                        },
+                        fontSize = 13.sp,
+                        color = Color(0xFFB5B6AC)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(onClick = onOpenAppDetails) {
+                        Text(if (isAr) "فتح معلومات التطبيق (App Info)" else "Open App Info (Allow Restricted Settings)")
+                    }
+                }
+            }
         }
 
         BeamerPage.CROSSING -> {
@@ -662,10 +1040,17 @@ fun PageContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Display Arrangement & Edge Resistance", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (isAr) "ترتيب الشاشات ومقاومة الحواف عند العبور" else "Display Arrangement & Edge Resistance",
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Push the pointer against the outer edge facing a paired machine. Once pressure reaches 100%, input crosses automatically.",
+                        text = if (isAr) {
+                            "اسحب المؤشر باتجاه حافة الشاشة المقابلة للجهاز الآخر؛ عند وصول ضغط الحافة إلى 100% ينتقل الماوس والكيبورد تلقائياً."
+                        } else {
+                            "Push the pointer against the outer edge facing a paired machine. Once pressure reaches 100%, input crosses automatically."
+                        },
                         fontSize = 13.sp,
                         color = Color(0xFFB5B6AC)
                     )
@@ -673,7 +1058,10 @@ fun PageContent(
                     var sliderVal by remember(coreState.resistancePx) {
                         mutableFloatStateOf(coreState.resistancePx.toFloat())
                     }
-                    Text("Edge Resistance: ${sliderVal.toInt()} dp", fontFamily = FontFamily.Monospace)
+                    Text(
+                        text = if (isAr) "مقاومة الحافة: ${sliderVal.toInt()} dp" else "Edge Resistance: ${sliderVal.toInt()} dp",
+                        fontFamily = FontFamily.Monospace
+                    )
                     Slider(
                         value = sliderVal,
                         onValueChange = { sliderVal = it },
@@ -707,15 +1095,25 @@ fun PageContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Pointer Speed, Scroll & Unicode Text Bridge", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (isAr) "سرعة المؤشر والتمرير وإرسال النصوص الفورية" else "Pointer Speed, Scroll & Unicode Text Bridge",
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        "Per WIRE.md Section 7, Android belongs to the PC key family and translates shortcuts automatically when driving a Mac (Ctrl -> Cmd, Alt -> Option).",
+                        text = if (isAr) {
+                            "يقوم Beamer بترجمة اختصارات لوحة المفاتيح تلقائياً بين أندرويد/ويندوز وأجهزة الماك (Ctrl <-> Cmd) ويدعم إرسال النصوص العربية والإيموجي مباشرة."
+                        } else {
+                            "Per WIRE.md Section 7, Android belongs to the PC key family and translates shortcuts automatically when driving a Mac (Ctrl -> Cmd, Alt -> Option)."
+                        },
                         fontSize = 13.sp,
                         color = Color(0xFFB5B6AC)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    Text("Pointer Speed: ${(ptrSpeed * 100).toInt()}%", fontFamily = FontFamily.Monospace)
+                    Text(
+                        text = if (isAr) "سرعة المؤشر: ${(ptrSpeed * 100).toInt()}%" else "Pointer Speed: ${(ptrSpeed * 100).toInt()}%",
+                        fontFamily = FontFamily.Monospace
+                    )
                     Slider(
                         value = ptrSpeed,
                         onValueChange = { ptrSpeed = it },
@@ -735,7 +1133,10 @@ fun PageContent(
                         },
                         valueRange = 0.25f..4.0f
                     )
-                    Text("Scroll Speed: ${(scrSpeed * 100).toInt()}%", fontFamily = FontFamily.Monospace)
+                    Text(
+                        text = if (isAr) "سرعة التمرير (Scroll): ${(scrSpeed * 100).toInt()}%" else "Scroll Speed: ${(scrSpeed * 100).toInt()}%",
+                        fontFamily = FontFamily.Monospace
+                    )
                     Slider(
                         value = scrSpeed,
                         onValueChange = { scrSpeed = it },
@@ -760,7 +1161,7 @@ fun PageContent(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Reverse scroll direction", fontSize = 14.sp)
+                        Text(if (isAr) "عكس اتجاه التمرير" else "Reverse scroll direction", fontSize = 14.sp)
                         Switch(
                             checked = revScroll,
                             onCheckedChange = {
@@ -789,7 +1190,7 @@ fun PageContent(
                         OutlinedTextField(
                             value = textToSend,
                             onValueChange = { textToSend = it },
-                            label = { Text("Send Unicode text / emoji frame") },
+                            label = { Text(if (isAr) "اكتب نصاً عربياً أو إنجليزياً لإرساله للجهاز الآخر" else "Send Unicode text / emoji frame") },
                             modifier = Modifier.weight(1f)
                         )
                         Button(onClick = {
@@ -798,7 +1199,7 @@ fun PageContent(
                                 textToSend = ""
                             }
                         }) {
-                            Text("Send")
+                            Text(if (isAr) "إرسال" else "Send")
                         }
                     }
                 }
@@ -811,7 +1212,10 @@ fun PageContent(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Crossing Styles (core/effects.py)", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (isAr) "تأثيرات العبور البصرية (core/effects.py)" else "Crossing Styles (core/effects.py)",
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(modifier = Modifier.height(10.dp))
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -870,9 +1274,12 @@ fun PageContent(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("Tablet Responder Mode (TCP ${coreState.port})", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Allow paired desktops to cross onto this tablet screen",
+                                text = if (isAr) "وضع استقبال التحكم على التابلت (TCP ${coreState.port})" else "Tablet Responder Mode (TCP ${coreState.port})",
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (isAr) "السماح للأجهزة المقترنة بالدخول بالماوس والكيبورد إلى شاشة هذا الجهاز" else "Allow paired desktops to cross onto this tablet screen",
                                 fontSize = 12.sp,
                                 color = Color(0xFF9EA096)
                             )
@@ -897,12 +1304,15 @@ fun PageContent(
                         )
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
-                    Text("Add Peer Manually", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (isAr) "إضافة جهاز يدوياً" else "Add Peer Manually",
+                        fontWeight = FontWeight.SemiBold
+                    )
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = newPeerName,
                         onValueChange = { newPeerName = it },
-                        label = { Text("Peer Name") },
+                        label = { Text(if (isAr) "اسم الجهاز" else "Peer Name") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -910,13 +1320,13 @@ fun PageContent(
                         OutlinedTextField(
                             value = newPeerHost,
                             onValueChange = { newPeerHost = it },
-                            label = { Text("IPv4 Host") },
+                            label = { Text(if (isAr) "عنوان IPv4" else "IPv4 Host") },
                             modifier = Modifier.weight(0.65f)
                         )
                         OutlinedTextField(
                             value = newPeerPort,
                             onValueChange = { newPeerPort = it },
-                            label = { Text("Port") },
+                            label = { Text(if (isAr) "المنفذ (Port)" else "Port") },
                             modifier = Modifier.weight(0.35f)
                         )
                     }
@@ -925,7 +1335,7 @@ fun PageContent(
                         val portInt = newPeerPort.toIntOrNull() ?: 24820
                         onRefreshState(callBridge("add_or_update_peer", newPeerName, newPeerHost, portInt, "right"))
                     }) {
-                        Text("Save Peer Entry")
+                        Text(if (isAr) "حفظ الجهاز" else "Save Peer Entry")
                     }
                 }
             }
@@ -939,6 +1349,7 @@ fun PermissionRowCard(
     description: String,
     granted: Boolean,
     buttonText: String,
+    readyText: String = "Ready",
     onClick: () -> Unit,
 ) {
     Card(
@@ -969,7 +1380,7 @@ fun PermissionRowCard(
                     Text(buttonText)
                 }
             } else {
-                Text("Ready", color = Color(0xFF4CAF50), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Text(readyText, color = Color(0xFF4CAF50), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             }
         }
     }
@@ -982,6 +1393,7 @@ fun TabletTrackpadAndModifierSurface(
     onRefreshState: (String) -> Unit,
 ) {
     val density = LocalDensity.current.density
+    val isAr = coreState.uiLang == "ar"
     val accumulator = remember(density, coreState.pointerSpeed) {
         LogicalMotionAccumulator(density, coreState.pointerSpeed)
     }
@@ -1006,7 +1418,11 @@ fun TabletTrackpadAndModifierSurface(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "Trackpad (${coreState.effectStyle} · ${(coreState.pointerSpeed * 100).toInt()}%)",
+                    text = if (isAr) {
+                        "لوحة اللمس Trackpad (${coreState.effectStyle} · ${(coreState.pointerSpeed * 100).toInt()}%)"
+                    } else {
+                        "Trackpad (${coreState.effectStyle} · ${(coreState.pointerSpeed * 100).toInt()}%)"
+                    },
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 13.sp
                 )
@@ -1019,7 +1435,6 @@ fun TabletTrackpadAndModifierSurface(
             }
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Trackpad Canvas with tap-to-click, drag motion, and right/left edge crossing glow
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -1111,7 +1526,6 @@ fun TabletTrackpadAndModifierSurface(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-            // Mouse Buttons & Scroll Wheel Strip
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -1122,7 +1536,7 @@ fun TabletTrackpadAndModifierSurface(
                         onRefreshState(callBridge("record_mouse_button", "left", false))
                     },
                     modifier = Modifier.weight(1f)
-                ) { Text("L-Click", fontSize = 11.sp) }
+                ) { Text(if (isAr) "نقر يسار" else "L-Click", fontSize = 11.sp) }
 
                 OutlinedButton(
                     onClick = {
@@ -1130,32 +1544,31 @@ fun TabletTrackpadAndModifierSurface(
                         onRefreshState(callBridge("record_mouse_button", "right", false))
                     },
                     modifier = Modifier.weight(1f)
-                ) { Text("R-Click", fontSize = 11.sp) }
+                ) { Text(if (isAr) "نقر يمين" else "R-Click", fontSize = 11.sp) }
 
                 OutlinedButton(
                     onClick = { onRefreshState(callBridge("record_wheel", 0.0, -3.0, "line")) },
                     modifier = Modifier.weight(1f)
-                ) { Text("Scroll ↑", fontSize = 11.sp) }
+                ) { Text(if (isAr) "تمرير ↑" else "Scroll ↑", fontSize = 11.sp) }
 
                 OutlinedButton(
                     onClick = { onRefreshState(callBridge("record_wheel", 0.0, 3.0, "line")) },
                     modifier = Modifier.weight(1f)
-                ) { Text("Scroll ↓", fontSize = 11.sp) }
+                ) { Text(if (isAr) "تمرير ↓" else "Scroll ↓", fontSize = 11.sp) }
             }
 
             Spacer(modifier = Modifier.height(6.dp))
-            // Multi-Finger Trackpad Gestures & Modifier Shortcuts
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(
-                    "Task View (3F↑)" to { callBridge("record_gesture", "swipe", "up", 3) },
-                    "Desktop (3F↓)" to { callBridge("record_gesture", "swipe", "down", 3) },
-                    "Space ←" to { callBridge("record_gesture", "swipe", "left", 3) },
-                    "Space →" to { callBridge("record_gesture", "swipe", "right", 3) },
-                    "Cmd/Ctrl+C" to { callBridge("record_key_chord", "ctrl", "c") },
-                    "Cmd/Ctrl+V" to { callBridge("record_key_chord", "ctrl", "v") },
+                    (if (isAr) "المهام (3↑)" else "Task View (3F↑)") to { callBridge("record_gesture", "swipe", "up", 3) },
+                    (if (isAr) "سطح المكتب (3↓)" else "Desktop (3F↓)") to { callBridge("record_gesture", "swipe", "down", 3) },
+                    (if (isAr) "مساحة ←" else "Space ←") to { callBridge("record_gesture", "swipe", "left", 3) },
+                    (if (isAr) "مساحة →" else "Space →") to { callBridge("record_gesture", "swipe", "right", 3) },
+                    (if (isAr) "نسخ Ctrl+C" else "Cmd/Ctrl+C") to { callBridge("record_key_chord", "ctrl", "c") },
+                    (if (isAr) "لصق Ctrl+V" else "Cmd/Ctrl+V") to { callBridge("record_key_chord", "ctrl", "v") },
                 ).forEach { (label, action) ->
                     OutlinedButton(onClick = { onRefreshState(action()) }) {
                         Text(label, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
