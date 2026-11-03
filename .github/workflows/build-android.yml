@@ -145,19 +145,24 @@ jobs:
       - name: Live Test APK on Honor MagicPad 2 (3000x1920 @ 290dpi) Emulator
         run: |
           sudo chmod 666 /dev/kvm || true
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
           AVDMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager"
-          yes | "$SDKMANAGER" "emulator" "system-images;android-34;default;x86_64" > /dev/null
+          yes | "$SDKMANAGER" "emulator" "system-images;android-34;default;x86_64" > /dev/null || true
           echo "no" | "$AVDMANAGER" create avd -n magicpad2 -k "system-images;android-34;default;x86_64" --force
-          cat >> ~/.android/avd/magicpad2.avd/config.ini << 'EOF'
+          CONFIG_INI=$(find "$HOME" -name "config.ini" 2>/dev/null | grep "magicpad2.avd" | head -n 1)
+          if [ -n "$CONFIG_INI" ]; then
+            cat >> "$CONFIG_INI" << 'EOF'
           hw.lcd.width=3000
           hw.lcd.height=1920
           hw.lcd.density=290
           hw.keyboard=yes
           hw.ramSize=4096
           EOF
+          fi
 
-          "${ANDROID_HOME}/emulator/emulator" -avd magicpad2 -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim &
+          "${ANDROID_HOME}/emulator/emulator" -avd magicpad2 -skin 3000x1920 -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim &
           EMULATOR_PID=$!
 
           "${ANDROID_HOME}/platform-tools/adb" wait-for-device
